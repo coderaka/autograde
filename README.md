@@ -1,95 +1,183 @@
-# SP-AutoGrader 📝
+# AutoGrade 📝
 
-> 基于 Gemini CLI 的数学作业自动批改系统。助教打开终端，启动 Agent，开始改作业。
+**A Gemini CLI-powered homework grading agent.** TAs open the terminal, start the agent, and grade — just like chatting with a knowledgeable colleague.
 
-## 快速开始
+> Built on [Gemini CLI](https://geminicli.com/). No backend code, no API keys to manage, no complex setup.
 
-### 1. 安装 Gemini CLI
+## ✨ Features
+
+- **Multimodal grading** — reads handwritten PDF scans, photos (JPG/PNG), and Markdown submissions natively
+- **Interactive review** — chat with the agent about specific grading decisions, just like talking to a human TA
+- **Structured rubrics** — define scoring criteria in Markdown; the agent grades against them point by point
+- **Batch processing** — grade all submissions in batches, with pause points for human review
+- **Grade summaries** — auto-generate score tables with statistics (mean, median, std dev, distribution)
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+Install [Gemini CLI](https://geminicli.com/docs/get-started/installation):
 
 ```bash
 npm install -g @google/gemini-cli
 ```
 
-首次运行需要登录 Google 账号（免费）。
+First-time users: run `gemini` once to authenticate with your Google account (free).
 
-### 2. Clone 项目
-
-```bash
-git clone https://github.com/xxx/sp-autograde.git
-cd sp-autograde
-```
-
-### 3. 准备作业
-
-把学生提交的 PDF 文件放入 `submissions/hw1/` 目录：
+### Setup
 
 ```bash
-cp ~/Downloads/hw1_submissions/*.pdf submissions/hw1/
+git clone https://github.com/zchihao/autograde.git
+cd autograde
 ```
 
-### 4. (可选) 编辑评分标准
+### Prepare Your Assignment
 
-评分标准在 `rubrics/hw1/rubric.md`，你可以根据需要调整分值、增减评分点。
+1. **Write rubric** — create `rubrics/hw1/rubric.md` with scoring criteria (see the included example)
+2. **Add submissions** — put student files into `submissions/hw1/`:
+   ```bash
+   cp ~/Downloads/hw1_submissions/* submissions/hw1/
+   ```
 
-### 5. 启动批改
+### Start Grading
 
 ```bash
 gemini
 ```
 
-进入交互模式后，使用以下命令：
+Then use these commands:
 
-| 命令 | 说明 |
-|------|------|
-| `/grade submissions/hw1/张三.pdf` | 批改单份作业 |
-| `/grade-all` | 批量批改所有未批改的作业 |
-| `/summary` | 生成成绩汇总表 |
+| Command | Description |
+|---------|-------------|
+| `/grade submissions/hw1/student.pdf` | Grade a single submission |
+| `/grade-all` | Batch grade all ungraded submissions |
+| `/summary` | Generate a grade summary with statistics |
 
-### 6. 交互式调整
+### Have a Conversation
 
-批改完成后，你可以直接和 Agent 对话：
-
-```
-> 这个学生 Q2.2 用了 Jensen 不等式而不是 Cauchy-Schwarz，重新评估一下
-> Q3 的 bonus 他做了但推导有一步跳得太多，帮我看看扣几分合理
-> 我觉得这个得分太严了，Q1 给满分吧
-```
-
-Agent 会根据你的指令修改批改结果。
-
-## 目录结构
+After grading, talk to the agent naturally:
 
 ```
-sp-autograde/
-├── GEMINI.md                  # Agent 人格 & 批改指南
-├── .gemini/commands/          # 工作流命令
-│   ├── grade.toml             # /grade — 批改单份
-│   ├── grade-all.toml         # /grade-all — 批量批改
-│   └── summary.toml           # /summary — 成绩汇总
-├── rubrics/                   # 评分标准 (助教编辑)
-│   └── hw1/rubric.md
-├── submissions/               # 学生提交 (PDF)
+> This student used Jensen's inequality instead of Cauchy-Schwarz in Q2.2. Re-evaluate.
+> The bonus question — they attempted it but skipped a step. Should I give partial credit?
+> I think Q1 was graded too harshly, give full marks.
+```
+
+The agent remembers context and can revise its grading on the fly.
+
+## 📁 Project Structure
+
+```
+autograde/
+├── GEMINI.md                  # Agent personality & grading guidelines
+├── .gemini/
+│   └── commands/
+│       ├── grade.toml         # /grade command
+│       ├── grade-all.toml     # /grade-all command
+│       └── summary.toml       # /summary command
+├── rubrics/                   # Grading rubrics (TA-editable)
 │   └── hw1/
-└── results/                   # 批改结果 (自动生成)
+│       └── rubric.md          # Scoring criteria + model answers
+├── submissions/               # Student submissions
+│   └── hw1/
+└── results/                   # Grading reports (auto-generated)
     └── hw1/
 ```
 
-## 添加新作业
+## 📝 Writing a Rubric
 
-1. 创建新的 rubric：`rubrics/hw2/rubric.md`
-2. 创建提交目录：`submissions/hw2/`
-3. 创建结果目录：`results/hw2/`
-4. 修改 `.gemini/commands/` 中的命令（将 `hw1` 改为 `hw2`），或直接在对话中告诉 Agent 要改哪次作业
+Create `rubrics/{assignment}/rubric.md`. The format is flexible, but we recommend:
 
-> 💡 **提示**: 未来会支持通过命令参数指定作业编号，目前建议直接在对话中说明。
+```markdown
+# Course HW1 — Grading Rubric
 
-## 支持的提交格式
+> Total: 100 points
 
-- ✅ 手写扫描 PDF
-- ✅ LaTeX 编译的 PDF
-- ✅ 打印/截图混合 PDF
+## Q1: Problem Title (20 pts)
 
-Agent 使用 Gemini 的多模态能力直接阅读 PDF，无需预处理。
+### Scoring Breakdown
+| Item | Points | Criteria |
+|------|--------|----------|
+| Step 1 correct | 5 | Must include ... |
+| Step 2 correct | 10 | Apply theorem X to ... |
+| Final answer | 5 | Conclude that ... |
+
+### Model Answer
+[Full solution here — the agent uses this as reference]
+
+### Common Mistakes
+- [Describe typical errors and how to handle them]
+
+## Q2: ...
+```
+
+**Key tips**:
+- Be explicit about partial credit policies
+- Include common mistakes so the agent handles them consistently
+- The standard answer helps the agent evaluate non-standard approaches
+
+## 📂 Supported Submission Formats
+
+| Format | Extension | How It's Read |
+|--------|-----------|---------------|
+| Scanned handwriting | `.pdf` | Gemini's multimodal vision |
+| LaTeX-compiled PDF | `.pdf` | Direct text + formula extraction |
+| Photo of handwriting | `.jpg`, `.png` | Gemini's multimodal vision |
+| Markdown with LaTeX | `.md` | Native text parsing |
+
+All formats are read by Gemini CLI's built-in `view_file` tool — no preprocessing needed.
+
+## 🔧 Adding a New Assignment
+
+```bash
+# 1. Create rubric
+mkdir rubrics/hw2
+# Write your rubric
+vim rubrics/hw2/rubric.md
+
+# 2. Create directories
+mkdir -p submissions/hw2 results/hw2
+
+# 3. Add submissions
+cp ~/Downloads/hw2/*.pdf submissions/hw2/
+
+# 4. Start grading
+gemini
+> /grade-all
+```
+
+## 🗺️ Roadmap
+
+Planned enhancements for future versions:
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Assignment argument** | `/grade --hw hw2 student.pdf` — pass assignment as argument | Planned |
+| **Rubric templates** | Pre-built rubrics for common math courses (calculus, linear algebra, probability) | Planned |
+| **Multi-language** | Support English and Chinese feedback switching via config | Planned |
+| **Plagiarism flags** | Auto-detect suspiciously similar submissions and flag for review | Planned |
+| **Grade export** | Direct export to Canvas/Blackboard CSV format | Planned |
+| **Web UI** | Optional browser-based review interface for non-CLI users | Exploring |
+| **Custom personas** | Let TAs define their own grading personality (strict, lenient, encouraging) | Exploring |
+
+## 🤝 Contributing
+
+Contributions welcome! Areas where help is particularly appreciated:
+
+- **Rubric templates** for different courses and subjects
+- **Prompt engineering** improvements to GEMINI.md and command definitions
+- **Documentation** and tutorials for TAs unfamiliar with CLI tools
+
+## ⚙️ How It Works
+
+AutoGrade is a **zero-code** system. It leverages [Gemini CLI](https://geminicli.com/)'s native capabilities:
+
+1. **`GEMINI.md`** — loaded automatically as the agent's system prompt, defining personality and grading rules
+2. **Custom Commands** (`.gemini/commands/*.toml`) — one-click workflows that read rubrics, process submissions, and write reports
+3. **`view_file` tool** — Gemini CLI's built-in tool for reading PDFs, images, and text files with full multimodal understanding
+4. **Interactive conversation** — the CLI's chat interface lets TAs discuss, adjust, and override any grading decision
+
+No API keys, no Python dependencies, no Docker containers. Just `npm install -g @google/gemini-cli` and start grading.
 
 ## License
 
