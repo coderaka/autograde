@@ -1,0 +1,3 @@
+# 忽略这些目录，避免自动扫描大量 PDF 撑爆上下文
+submissions/
+results/

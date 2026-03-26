@@ -1,0 +1,14 @@
+# OS
+.DS_Store
+
+# PDF submissions (tracked via .gitkeep, not the actual PDFs)
+submissions/**/*.pdf
+
+# Results are generated, not tracked
+results/**/*.md
+results/**/*.csv
+!results/.gitkeep
+!results/hw1/.gitkeep
+
+# Environment
+.env
