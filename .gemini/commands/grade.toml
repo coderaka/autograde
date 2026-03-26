@@ -12,7 +12,7 @@ prompt = """
 
 请用 view_file 工具读取以下学生提交的文件: {{args}}
 
-支持的格式：PDF、图片（JPG/PNG）、Markdown 文件，view_file 均可直接读取。
+⚠️ 必须使用 view_file 读取 PDF 和图片文件，绝对不要用 cat 或 shell 命令。只有 view_file 才能触发多模态理解能力来识别手写内容。
 
 ## 批改流程
 

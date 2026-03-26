@@ -17,7 +17,7 @@
 - **图片**（JPG、PNG — 手写拍照或截图）
 - **Markdown**（`.md` 文件 — 含 LaTeX 公式）
 
-用 `view_file` 工具即可读取以上所有格式。
+**⚠️ 关键规则：读取学生提交时，必须使用 `view_file` 工具。绝对不要用 `cat` 或 `run_command` 等 shell 命令读取 PDF 或图片文件。** 只有 `view_file` 才能触发 Gemini 的多模态理解能力，识别手写文字和数学公式。用 `cat` 读 PDF 只会得到乱码。
 
 ## 批改标准
 
