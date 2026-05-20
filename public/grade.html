@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoGrade — 批改</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs" type="module"></script>
+  <script id="mathjax-config" type="text/x-mathjax-config">
+    MathJax = { tex: { inlineMath: [['$','$']], displayMath: [['$$','$$']] } };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+</head>
+<body>
+  <!-- Nav bar -->
+  <div class="nav-bar" id="nav-bar">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <a href="/" class="btn btn-sm btn-secondary">← 返回</a>
+      <span class="nav-info">
+        <span class="nav-student" id="nav-student">加载中...</span>
+        <span id="nav-index" style="color:var(--text-muted); margin-left:8px;"></span>
+      </span>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-sm btn-secondary" id="btn-prev">⬅ 上一份</button>
+      <button class="btn btn-sm btn-secondary" id="btn-next">下一份 ➡</button>
+    </div>
+  </div>
+
+  <!-- Three-column layout -->
+  <div class="grading-layout">
+    <!-- Left: PDF Viewer -->
+    <div class="grading-panel pdf-viewer">
+      <div class="pdf-controls">
+        <button class="btn btn-sm btn-secondary" id="pdf-prev">◀</button>
+        <span id="pdf-page-info">— / —</span>
+        <button class="btn btn-sm btn-secondary" id="pdf-next">▶</button>
+        <button class="btn btn-sm btn-secondary" id="pdf-zoom-out">−</button>
+        <span id="pdf-zoom-level">100%</span>
+        <button class="btn btn-sm btn-secondary" id="pdf-zoom-in">+</button>
+      </div>
+      <div class="pdf-canvas-wrapper" id="pdf-canvas-wrapper">
+        <canvas id="pdf-canvas"></canvas>
+      </div>
+    </div>
+
+    <!-- Middle: Score Panel -->
+    <div class="grading-panel" style="overflow-y:auto;">
+      <div class="score-panel" id="score-panel">
+        <h2>📝 评分</h2>
+        <div id="score-items">
+          <div class="empty-state" style="padding:40px 20px;">
+            <div class="spinner" style="margin:0 auto 12px;"></div>
+            <p>加载评分数据...</p>
+          </div>
+        </div>
+        <div class="total-score-bar">
+          <span>总分</span>
+          <span class="total-score-value" id="total-score">— / 120</span>
+        </div>
+        <div class="action-bar">
+          <button class="btn btn-primary" id="btn-save">💾 保存</button>
+          <button class="btn btn-secondary" id="btn-regrade" title="用 AI 重新批改这份卷子">🔄 AI 重评</button>
+          <button class="btn btn-success" id="btn-finalize">✅ 确认锁定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Chat Panel -->
+    <div class="grading-panel chat-panel">
+      <div class="chat-header">💬 和 AI 讨论这份卷子</div>
+      <div class="chat-messages" id="chat-messages">
+        <div class="chat-message assistant">你好！我是 AI 助教。如果你对某道题的评分有疑问，可以在这里和我讨论。</div>
+      </div>
+      <div class="chat-input-bar">
+        <textarea class="chat-input" id="chat-input" rows="2" placeholder="输入问题...（按 Enter 发送）"></textarea>
+        <button class="btn btn-primary btn-sm" id="btn-send-chat">发送</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Live log panel (left sidebar) -->
+  <style>
+    .log-panel {
+      position: fixed; top: 0; left: 0; bottom: 0;
+      width: 280px; background: var(--bg-card);
+      border-right: 1px solid var(--border); z-index: 500;
+      display: none; flex-direction: column;
+      box-shadow: 4px 0 20px rgba(0,0,0,0.2);
+      transition: width 0.2s ease;
+    }
+    .log-panel.visible { display: flex; }
+    .log-panel.minimized .log-body { display: none; }
+    .log-panel.minimized { width: 38px; overflow: hidden; }
+    .log-panel.minimized .log-panel-header h3 span { display: none; }
+    .log-panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 12px; border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated); flex-shrink: 0; min-height: 44px;
+    }
+    .log-panel-header h3 { font-size: 0.82rem; margin: 0; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; }
+    .log-panel-header .toggle-btn {
+      background: none; border: none; color: var(--text-muted);
+      cursor: pointer; font-size: 1.1rem; padding: 2px 6px; flex-shrink: 0;
+    }
+    .log-panel-header .toggle-btn:hover { color: var(--text-primary); }
+    .log-body {
+      overflow-y: auto; padding: 8px 10px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.72rem; line-height: 1.5; flex: 1;
+    }
+    .log-entry { display: flex; flex-direction: column; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+    .log-time { color: var(--text-muted); font-size: 0.68rem; }
+    .log-msg { color: var(--text-secondary); word-break: break-word; }
+    .log-entry.done .log-msg { color: var(--green); }
+    .log-entry.error .log-msg { color: var(--red); }
+    .log-entry.start .log-msg { color: var(--accent); }
+    body.log-open .grading-layout { margin-left: 280px; }
+    body.log-open .nav-bar { padding-left: 292px; }
+    body.log-minimized .grading-layout { margin-left: 38px; }
+    body.log-minimized .nav-bar { padding-left: 50px; }
+  </style>
+
+  <div class="log-panel" id="log-panel">
+    <div class="log-panel-header">
+      <h3><span>📋 AI 批改日志</span></h3>
+      <button class="toggle-btn" id="log-toggle" title="最小化/展开">◀</button>
+    </div>
+    <div class="log-body" id="log-body"></div>
+  </div>
+
+  <script>
+  // SSE log panel for grading view (left sidebar)
+  (function() {
+    const panel = document.getElementById('log-panel');
+    const toggle = document.getElementById('log-toggle');
+    const body = document.getElementById('log-body');
+    let minimized = true; // Default minimized on grading view — less space
+
+    panel.classList.add('visible');
+    panel.classList.add('minimized');
+    document.body.classList.remove('log-open');
+    document.body.classList.add('log-minimized');
+
+    toggle.addEventListener('click', () => {
+      minimized = !minimized;
+      panel.classList.toggle('minimized', minimized);
+      localStorage.setItem('logMinimized', minimized);
+      toggle.textContent = minimized ? '▶' : '◀';
+      document.body.classList.toggle('log-open', !minimized);
+      document.body.classList.toggle('log-minimized', minimized);
+    });
+
+    const es = new EventSource('/api/events');
+    es.onmessage = (e) => {
+      const evt = JSON.parse(e.data);
+      if (evt.type === 'connected') return;
+      let cls = '', msg = '';
+      const p = evt.progress ? `[${evt.progress}] ` : '';
+      switch (evt.type) {
+        case 'batch_start': cls = 'start'; msg = `📦 批量批改启动 — ${evt.count} 份, ${evt.model}`; break;
+        case 'grading_start': cls = 'start'; msg = `${p}⏳ 正在批改: ${evt.label} (${evt.model})`; break;
+        case 'grading_done': cls = 'done'; msg = `${p}✅ ${evt.label} — ${evt.score}/120`; break;
+        case 'grading_error': cls = 'error'; msg = `${p}❌ ${evt.label} — ${evt.error}`; break;
+        case 'batch_done': cls = 'done'; msg = `🎉 批量批改完成！共 ${evt.count} 份`; break;
+        case 'retry': cls = 'start'; msg = `🔄 ${evt.label} — 第${evt.attempt}次重试 (${evt.reason})`; break;
+        default: return;
+      }
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${cls}`;
+      entry.innerHTML = `<span class="log-time">${evt.time || ''}</span><span class="log-msg">${msg}</span>`;
+      body.appendChild(entry);
+      body.scrollTop = body.scrollHeight;
+    };
+  })();
+  </script>
+
+  <script src="/js/grading.js" type="module"></script>
+</body>
+</html>

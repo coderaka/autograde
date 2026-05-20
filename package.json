@@ -1,0 +1,22 @@
+{
+  "name": "autograde",
+  "version": "2.0.0",
+  "description": "AI-assisted collaborative exam grading workbench",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "import-roster": "node scripts/import-roster.js"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "sql.js": "^1.11.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "multer": "^2.0.0",
+    "xlsx": "^0.18.5",
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.24.0"
+  }
+}

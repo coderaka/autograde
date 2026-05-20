@@ -1,20 +1,26 @@
 # OS
 .DS_Store
 
-# Student submissions (privacy — don't commit student work)
+# Dependencies
+node_modules/
+
+# Student submissions (privacy)
 submissions/*
 !submissions/.gitkeep
-!submissions/hw*/.gitkeep
+!submissions/midterm/.gitkeep
 
-# Rubrics content (course-specific, not shared publicly)
-rubrics/*
-!rubrics/.gitkeep
-!rubrics/hw*/.gitkeep
+# Rubric answers (course-specific)
+rubrics/*/answers.md
 
-# Grading results (generated, contains student data)
-results/*
-!results/.gitkeep
-!results/hw*/.gitkeep
+# Database
+db/*.db
+
+# Grading results (generated)
+results/
 
 # Environment
 .env
+.vault
+
+# Uploads
+uploads/

@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoGrade — AI 辅助批改工作台</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .model-selector {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--bg-elevated);
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+    }
+    .model-selector label {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .model-selector select {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-family: inherit;
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+    .model-selector select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .model-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.7rem;
+      font-weight: 500;
+    }
+    .model-badge.pro { background: rgba(168,139,250,0.15); color: #a78bfa; }
+    .model-badge.fast { background: rgba(74,222,128,0.12); color: #4ade80; }
+    .toolbar-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .toolbar-left { display: flex; align-items: center; gap: 10px; }
+    .toolbar-right { display: flex; align-items: center; gap: 10px; }
+    .roster-info {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .roster-info.loaded { color: var(--green); }
+
+    /* Upload drop zone */
+    .drop-zone {
+      position: fixed;
+      inset: 0;
+      background: rgba(124, 140, 245, 0.08);
+      border: 3px dashed var(--accent);
+      z-index: 999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    .drop-zone.active { display: flex; }
+    .drop-zone-inner {
+      text-align: center;
+      padding: 40px;
+      border-radius: var(--radius);
+      background: var(--bg-card);
+      border: 1px solid var(--accent);
+      box-shadow: var(--shadow);
+    }
+    .drop-zone-inner .icon { font-size: 3rem; margin-bottom: 12px; }
+    .drop-zone-inner h2 { color: var(--accent); margin-bottom: 4px; }
+    .drop-zone-inner p { color: var(--text-muted); font-size: 0.85rem; }
+
+    .upload-progress {
+      margin-top: 8px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    /* Left sidebar log panel */
+    .log-panel {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 280px;
+      background: var(--bg-card);
+      border-right: 1px solid var(--border);
+      z-index: 500;
+      display: none;
+      flex-direction: column;
+      box-shadow: 4px 0 20px rgba(0,0,0,0.2);
+      transition: width 0.2s ease;
+    }
+    .log-panel.visible { display: flex; }
+    .log-panel.minimized .log-body { display: none; }
+    .log-panel.minimized { width: 38px; overflow: hidden; }
+    .log-panel.minimized .log-panel-header h3 span { display: none; }
+    .log-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+      flex-shrink: 0;
+      min-height: 44px;
+    }
+    .log-panel-header h3 {
+      font-size: 0.82rem;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .log-panel-header .close-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 1.1rem;
+      padding: 2px 6px;
+      flex-shrink: 0;
+    }
+    .log-panel-header .close-btn:hover { color: var(--text-primary); }
+    .log-body {
+      overflow-y: auto;
+      padding: 8px 10px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.72rem;
+      line-height: 1.5;
+      flex: 1;
+    }
+    .log-entry {
+      display: flex;
+      flex-direction: column;
+      padding: 3px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .log-time { color: var(--text-muted); font-size: 0.68rem; }
+    .log-icon { flex-shrink: 0; }
+    .log-msg { color: var(--text-secondary); word-break: break-word; }
+    .log-entry.done .log-msg { color: var(--green); }
+    .log-entry.error .log-msg { color: var(--red); }
+    .log-entry.start .log-msg { color: var(--accent); }
+
+    /* Push main content right when panel is open */
+    body.log-open .container { margin-left: 280px; }
+    body.log-open header { padding-left: 292px; }
+    body.log-minimized .container { margin-left: 38px; }
+    body.log-minimized header { padding-left: 50px; }
+
+    .log-indicator {
+      display: none;
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      z-index: 499;
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(124,140,245,0.4);
+      animation: pulse 1.5s infinite;
+    }
+    .log-indicator.visible { display: flex; align-items: center; gap: 6px; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-title">
+      <span class="logo">🎓</span>
+      <h1>AutoGrade</h1>
+      <span style="color: var(--text-muted); font-size: 0.85rem; margin-left: 8px;">AI2613 随机过程 · 期中考试</span>
+    </div>
+    <div class="header-actions">
+      <div class="model-selector">
+        <label>模型</label>
+        <select id="model-select"></select>
+      </div>
+    </div>
+  </header>
+
+  <div class="container">
+    <!-- Stats -->
+    <div class="stats-grid" id="stats-grid">
+      <div class="stat-card">
+        <div class="stat-value" id="stat-total">0</div>
+        <div class="stat-label">总数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-graded">0</div>
+        <div class="stat-label">已 AI 批改</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-reviewed">0</div>
+        <div class="stat-label">已确认</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-finalized">0</div>
+        <div class="stat-label">已锁定</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-avg">—</div>
+        <div class="stat-label">平均分</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-median">—</div>
+        <div class="stat-label">中位数</div>
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="progress-bar-wrapper">
+      <div class="progress-bar" id="progress-bar"></div>
+      <div class="progress-legend">
+        <span class="finalized">已锁定</span>
+        <span class="reviewed">已确认</span>
+        <span class="ai-graded">AI 已评</span>
+        <span class="pending">待处理</span>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar-row">
+      <div class="toolbar-left">
+        <div class="filter-tabs" id="filter-tabs">
+          <button class="filter-tab active" data-filter="all">全部</button>
+          <button class="filter-tab" data-filter="pending">待处理</button>
+          <button class="filter-tab" data-filter="ai_graded">AI 已评</button>
+          <button class="filter-tab" data-filter="reviewed">已确认</button>
+          <button class="filter-tab" data-filter="finalized">已锁定</button>
+        </div>
+        <div class="roster-info" id="roster-info">📋 未导入花名册</div>
+      </div>
+      <div class="toolbar-right">
+        <label class="btn btn-secondary btn-sm" title="导入花名册 Excel（学号、姓名列）" style="cursor:pointer;">
+          📋 导入花名册
+          <input type="file" id="roster-file" accept=".xlsx,.xls,.csv" style="display:none;">
+        </label>
+        <label class="btn btn-secondary" title="上传学生卷子 PDF（支持多选）" style="cursor:pointer;">
+          📤 上传 PDF
+          <input type="file" id="pdf-upload" accept=".pdf" multiple style="display:none;">
+        </label>
+        <button class="btn btn-secondary" id="btn-scan" title="扫描 submissions 目录">📂 扫描文件</button>
+        <button class="btn btn-primary" id="btn-batch-grade" title="批量 AI 批改所有待处理卷子">🤖 批量 AI 批改</button>
+        <button class="btn btn-secondary" id="btn-export" title="导出 Excel">📊 导出成绩</button>
+      </div>
+    </div>
+
+    <!-- Submissions Table -->
+    <div class="table-wrapper">
+      <table id="submissions-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>学号</th>
+            <th>姓名</th>
+            <th>状态</th>
+            <th>AI 评分</th>
+            <th>最终分数</th>
+            <th>批改人</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="submissions-body"></tbody>
+      </table>
+    </div>
+
+    <div class="empty-state" id="empty-state" style="display:none;">
+      <div class="icon">📤</div>
+      <h2>暂无提交</h2>
+      <p>点击「上传 PDF」或直接将 PDF 文件拖放到此页面</p>
+    </div>
+
+    <!-- Drop zone overlay -->
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-zone-inner">
+        <div class="icon">📄</div>
+        <h2>松开上传</h2>
+        <p>将 PDF 文件拖放到这里</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Live log panel -->
+  <div class="log-panel" id="log-panel">
+    <div class="log-panel-header">
+      <h3><span>📋 AI 批改日志</span></h3>
+      <button class="close-btn" id="log-toggle" title="最小化/展开">◀</button>
+    </div>
+    <div class="log-body" id="log-body"></div>
+  </div>
+
+  <!-- Floating indicator when panel is closed -->
+  <button class="log-indicator" id="log-indicator" title="查看 AI 批改日志">
+    <span class="spinner" style="width:12px;height:12px;"></span> AI 批改中...
+  </button>
+
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>

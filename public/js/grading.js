@@ -1,0 +1,365 @@
+// ── Grading View Logic ──
+
+const API = '';
+const submissionId = Number(window.location.pathname.split('/').pop());
+let submission = null;
+let allSubmissions = [];
+let currentGrade = null; // The grade being edited (AI or final)
+
+// ── PDF.js ──
+let pdfDoc = null;
+let pageNum = 1;
+let pageRendering = false;
+let scale = 1.2;
+
+async function initPdfViewer(url) {
+  const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.worker.min.mjs';
+
+  const loadingTask = pdfjsLib.getDocument(url);
+  pdfDoc = await loadingTask.promise;
+  document.getElementById('pdf-page-info').textContent = `1 / ${pdfDoc.numPages}`;
+  renderPage(1);
+}
+
+async function renderPage(num) {
+  if (pageRendering) return;
+  pageRendering = true;
+
+  const page = await pdfDoc.getPage(num);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.getElementById('pdf-canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  pageNum = num;
+  document.getElementById('pdf-page-info').textContent = `${num} / ${pdfDoc.numPages}`;
+  pageRendering = false;
+}
+
+document.getElementById('pdf-prev').addEventListener('click', () => {
+  if (pageNum > 1) renderPage(pageNum - 1);
+});
+document.getElementById('pdf-next').addEventListener('click', () => {
+  if (pdfDoc && pageNum < pdfDoc.numPages) renderPage(pageNum + 1);
+});
+document.getElementById('pdf-zoom-in').addEventListener('click', () => {
+  scale = Math.min(scale + 0.2, 3.0);
+  document.getElementById('pdf-zoom-level').textContent = Math.round(scale * 100 / 1.2 * 100) + '%';
+  renderPage(pageNum);
+});
+document.getElementById('pdf-zoom-out').addEventListener('click', () => {
+  scale = Math.max(scale - 0.2, 0.4);
+  document.getElementById('pdf-zoom-level').textContent = Math.round(scale * 100 / 1.2 * 100) + '%';
+  renderPage(pageNum);
+});
+
+// ── Load Submission ──
+
+async function loadSubmission() {
+  try {
+    // Load all submissions for navigation
+    const allRes = await fetch(`${API}/api/submissions?assignment=midterm`);
+    allSubmissions = await allRes.json();
+
+    // Load this submission
+    const res = await fetch(`${API}/api/submissions/${submissionId}`);
+    if (!res.ok) throw new Error('Submission not found');
+    submission = await res.json();
+
+    // Set header
+    document.getElementById('nav-student').textContent =
+      `${submission.student_name || '未知'} (${submission.student_id || '—'})`;
+
+    const idx = allSubmissions.findIndex(s => s.id === submissionId);
+    document.getElementById('nav-index').textContent = `${idx + 1} / ${allSubmissions.length}`;
+
+    // Load PDF
+    initPdfViewer(`${API}/api/submissions/${submissionId}/pdf`);
+
+    // Load grade
+    currentGrade = submission.final_grade || submission.ai_grade || null;
+    renderScorePanel();
+
+    // Load chat
+    loadChat();
+
+    // Setup navigation
+    setupNav(idx);
+  } catch (err) {
+    showToast('加载失败: ' + err.message, 'error');
+  }
+}
+
+// ── Navigation ──
+
+function setupNav(idx) {
+  const prevBtn = document.getElementById('btn-prev');
+  const nextBtn = document.getElementById('btn-next');
+
+  prevBtn.disabled = idx <= 0;
+  nextBtn.disabled = idx >= allSubmissions.length - 1;
+
+  prevBtn.onclick = () => {
+    if (idx > 0) window.location.href = `/grade/${allSubmissions[idx - 1].id}`;
+  };
+  nextBtn.onclick = () => {
+    if (idx < allSubmissions.length - 1) window.location.href = `/grade/${allSubmissions[idx + 1].id}`;
+  };
+}
+
+// ── Render Score Panel ──
+
+function renderScorePanel() {
+  const container = document.getElementById('score-items');
+
+  if (!currentGrade || !currentGrade.questions) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding:30px 20px;">
+        <div class="icon">🤖</div>
+        <h3>尚未 AI 批改</h3>
+        <p>请先在 Dashboard 触发 AI 批改</p>
+      </div>`;
+    document.getElementById('total-score').textContent = '— / 120';
+    return;
+  }
+
+  // Group by main question
+  const groups = {};
+  for (const q of currentGrade.questions) {
+    const mainQ = q.question_id.replace(/[a-z]$/, '');
+    if (!groups[mainQ]) groups[mainQ] = [];
+    groups[mainQ].push(q);
+  }
+
+  let html = '';
+  for (const [mainQ, questions] of Object.entries(groups)) {
+    const groupTotal = questions.reduce((s, q) => s + q.awarded_score, 0);
+    const groupMax = questions.reduce((s, q) => s + q.max_score, 0);
+    html += `<div class="question-group">
+      <div class="question-group-header">
+        <span>第 ${mainQ} 题</span>
+        <span class="mono">${groupTotal} / ${groupMax}</span>
+      </div>`;
+
+    for (const q of questions) {
+      const statusIcon = q.needs_review ? '⚠️' : (q.is_correct ? '✅' : '❌');
+      const reviewClass = q.needs_review ? 'needs-review' : '';
+      html += `
+        <div class="score-item ${reviewClass}" data-qid="${q.question_id}">
+          <span class="q-id">${q.question_id}</span>
+          <input type="number" class="score-input" value="${q.awarded_score}"
+                 min="0" max="${q.max_score}" data-qid="${q.question_id}" data-max="${q.max_score}">
+          <span class="max-score">/ ${q.max_score}</span>
+          <span class="status-icon" title="${q.reasoning || ''}">${statusIcon}</span>
+        </div>
+        ${q.error_description && !q.is_correct ? `<div class="score-item-details" style="color:var(--red);">⚠ ${q.error_description}</div>` : ''}
+        ${q.needs_review && q.reasoning ? `<div class="score-item-details" style="color:var(--yellow);">💡 ${q.reasoning}</div>` : ''}
+        ${q.reasoning && !q.needs_review ? `<div class="score-item-details">${q.reasoning}</div>` : ''}`;
+    }
+    html += '</div>';
+  }
+
+  container.innerHTML = html;
+  updateTotalScore();
+
+  // Listen for score changes
+  container.querySelectorAll('.score-input').forEach(input => {
+    input.addEventListener('change', () => {
+      const qid = input.dataset.qid;
+      const max = Number(input.dataset.max);
+      let val = Number(input.value);
+      if (val < 0) val = 0;
+      if (val > max) val = max;
+      input.value = val;
+
+      // Update in currentGrade
+      const q = currentGrade.questions.find(q => q.question_id === qid);
+      if (q) {
+        q.awarded_score = val;
+        q.is_correct = val === q.max_score;
+      }
+      updateTotalScore();
+    });
+  });
+}
+
+function updateTotalScore() {
+  if (!currentGrade || !currentGrade.questions) return;
+  const total = currentGrade.questions.reduce((s, q) => s + q.awarded_score, 0);
+  currentGrade.total_score = total;
+  document.getElementById('total-score').textContent = `${total} / 120`;
+}
+
+// ── Save & Finalize ──
+
+document.getElementById('btn-save').addEventListener('click', async () => {
+  if (!currentGrade) return;
+  try {
+    const res = await fetch(`${API}/api/submissions/${submissionId}/grade`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grade: currentGrade, graded_by: 'TA' }),
+    });
+    if (!res.ok) throw new Error('保存失败');
+    showToast('评分已保存 ✅', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+});
+
+document.getElementById('btn-finalize').addEventListener('click', async () => {
+  if (!currentGrade) return;
+  if (!confirm('确认锁定这份卷子的评分？锁定后不可修改。')) return;
+
+  try {
+    // Save first
+    await fetch(`${API}/api/submissions/${submissionId}/grade`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grade: currentGrade, graded_by: 'TA' }),
+    });
+    // Then finalize
+    await fetch(`${API}/api/submissions/${submissionId}/finalize`, { method: 'PUT' });
+    showToast('评分已锁定 🔒', 'success');
+    // Navigate to next
+    const idx = allSubmissions.findIndex(s => s.id === submissionId);
+    if (idx < allSubmissions.length - 1) {
+      setTimeout(() => window.location.href = `/grade/${allSubmissions[idx + 1].id}`, 800);
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+});
+
+// ── AI Re-grade ──
+
+document.getElementById('btn-regrade').addEventListener('click', async () => {
+  if (!confirm('确认要用 AI 重新批改这份卷子？当前评分将被覆盖。')) return;
+
+  const btn = document.getElementById('btn-regrade');
+  btn.disabled = true;
+  btn.textContent = '⏳ 正在重评...';
+
+  // Show loading in score panel
+  document.getElementById('score-items').innerHTML = `
+    <div class="empty-state" style="padding:40px 20px;">
+      <div class="spinner" style="margin:0 auto 12px;"></div>
+      <p>AI 正在重新批改...</p>
+    </div>`;
+
+  try {
+    const res = await fetch(`${API}/api/submissions/${submissionId}/ai-grade`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error);
+    }
+    const data = await res.json();
+    showToast(`AI 重评完成！(${data.model})`, 'success');
+
+    // Reload submission data
+    const subRes = await fetch(`${API}/api/submissions/${submissionId}`);
+    submission = await subRes.json();
+    currentGrade = submission.ai_grade || null;
+    renderScorePanel();
+
+    // Update header
+    document.getElementById('nav-student').textContent =
+      `${submission.student_name || '未知'} (${submission.student_id || '—'})`;
+  } catch (err) {
+    showToast('AI 重评失败: ' + err.message, 'error');
+    // Restore score panel
+    renderScorePanel();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 AI 重评';
+  }
+});
+
+// ── Chat ──
+
+async function loadChat() {
+  try {
+    const res = await fetch(`${API}/api/submissions/${submissionId}/chat`);
+    const messages = await res.json();
+    const container = document.getElementById('chat-messages');
+
+    if (messages.length > 0) {
+      // Keep the welcome message and add history
+      for (const msg of messages) {
+        appendChatMessage(msg.role, msg.content);
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load chat:', err);
+  }
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const message = input.value.trim();
+  if (!message) return;
+
+  input.value = '';
+  appendChatMessage('user', message);
+
+  // Show typing indicator
+  const typingId = appendChatMessage('assistant', '<div class="spinner" style="width:16px;height:16px;"></div>');
+
+  try {
+    const res = await fetch(`${API}/api/submissions/${submissionId}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    const data = await res.json();
+    // Remove typing indicator and show reply
+    document.getElementById(typingId)?.remove();
+    appendChatMessage('assistant', data.reply);
+
+    // Render MathJax if present
+    if (window.MathJax) MathJax.typesetPromise();
+  } catch (err) {
+    document.getElementById(typingId)?.remove();
+    appendChatMessage('assistant', `❌ 错误: ${err.message}`);
+  }
+}
+
+function appendChatMessage(role, content) {
+  const container = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  const id = 'msg-' + Date.now() + Math.random().toString(36).slice(2, 6);
+  div.id = id;
+  div.className = `chat-message ${role}`;
+  div.innerHTML = content;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  return id;
+}
+
+document.getElementById('btn-send-chat').addEventListener('click', sendChat);
+document.getElementById('chat-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChat();
+  }
+});
+
+// ── Toast ──
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
+
+// ── Init ──
+loadSubmission();
