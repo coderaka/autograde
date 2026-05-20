@@ -206,7 +206,7 @@ app.get('/api/submissions/:id', (req, res) => {
 // Rubric max scores cache by assignment key
 const _maxScoreMaps = {};
 function getRubricMaxScores(assignment) {
-  const key = assignment || 'midterm';
+  const key = assignment || 'default';
   if (_maxScoreMaps[key]) return _maxScoreMaps[key];
   try {
     const rubricPath = join(__dirname, 'rubrics', key, 'rubric.json');
@@ -594,7 +594,7 @@ app.post('/api/submissions/:id/ai-grade-question', async (req, res) => {
 
 // Batch AI grading
 app.post('/api/submissions/batch-grade', async (req, res) => {
-  const subs = db.getSubmissions(req.body.assignment || 'midterm')
+  const subs = db.getSubmissions(req.body.assignment || 'default')
     .filter(s => s.status === 'pending' || s.status === 'error');
 
   const model = getCurrentModel();
@@ -686,12 +686,12 @@ app.post('/api/submissions/:id/chat', async (req, res) => {
 
 // ── Stats ──
 app.get('/api/stats', (req, res) => {
-  res.json(db.getStats(req.query.assignment || 'midterm'));
+  res.json(db.getStats(req.query.assignment || 'default'));
 });
 
 // ── Scan submissions directory ──
 app.post('/api/scan-submissions', (req, res) => {
-  const assignment = req.body.assignment || 'midterm';
+  const assignment = req.body.assignment || 'default';
   syncSubmissionsWithFilesystem(assignment);
   const dir = join(__dirname, 'submissions', assignment);
   if (!existsSync(dir)) return res.status(404).json({ error: 'Directory not found' });
@@ -718,7 +718,7 @@ app.post('/api/scan-submissions', (req, res) => {
 
 const pdfUpload = multer({ dest: 'uploads/', limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB per file
 app.post('/api/upload-pdfs', pdfUpload.array('pdfs', 200), (req, res) => {
-  const assignment = req.body.assignment || 'midterm';
+  const assignment = req.body.assignment || 'default';
   const dir = join(__dirname, 'submissions', assignment);
   mkdirSync(dir, { recursive: true });
 
@@ -762,7 +762,7 @@ app.post('/api/upload-pdfs', pdfUpload.array('pdfs', 200), (req, res) => {
 // ── Sync roster with unmatched submissions ──
 app.post('/api/sync-roster', (req, res) => {
   try {
-    const assignment = req.body.assignment || 'midterm';
+    const assignment = req.body.assignment || 'default';
     syncSubmissionsWithFilesystem(assignment);
     const subs = db.getSubmissions(assignment);
     let updated = 0;
@@ -880,8 +880,8 @@ app.get('/api/students', (req, res) => {
 
 // ── Export ──
 app.get('/api/export', (req, res) => {
-  const subs = db.getSubmissions(req.query.assignment || 'midterm');
-  const rubric = loadRubric(req.query.assignment || 'midterm');
+  const subs = db.getSubmissions(req.query.assignment || 'default');
+  const rubric = loadRubric(req.query.assignment || 'default');
 
   // Build export data
   const rows = subs.map(sub => {
@@ -935,7 +935,7 @@ function getLocalIP() {
 }
 
 // ── Sync database submissions with physical files ──
-function syncSubmissionsWithFilesystem(assignment = 'midterm') {
+function syncSubmissionsWithFilesystem(assignment = 'default') {
   console.log(`🧹 Syncing database submissions with filesystem for ${assignment}...`);
   try {
     const subs = db.getSubmissions(assignment);
@@ -1025,12 +1025,8 @@ app.get('/api/assignments', (req, res) => {
       }
     }
 
-    // Default sorting: midterm first, others alphabetically
-    assignments.sort((a, b) => {
-      if (a.key === 'midterm') return -1;
-      if (b.key === 'midterm') return 1;
-      return a.key.localeCompare(b.key);
-    });
+    // Sort assignments alphabetically
+    assignments.sort((a, b) => a.key.localeCompare(b.key));
 
     res.json(assignments);
   } catch (err) {
@@ -1103,7 +1099,22 @@ app.post('/api/assignments/generate-rubric', async (req, res) => {
 
 async function main() {
   await initDb();
-  syncSubmissionsWithFilesystem('midterm');
+  
+  // Sync database with filesystem for all discovered assignments
+  const rubricsDir = join(__dirname, 'rubrics');
+  if (existsSync(rubricsDir)) {
+    try {
+      const items = readdirSync(rubricsDir, { withFileTypes: true });
+      for (const item of items) {
+        if (item.isDirectory() && existsSync(join(rubricsDir, item.name, 'rubric.json'))) {
+          syncSubmissionsWithFilesystem(item.name);
+        }
+      }
+    } catch (err) {
+      console.error('Error syncing assignments on startup:', err);
+    }
+  }
+
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🎓 AutoGrade v2 running at http://localhost:${PORT}`);
     console.log(`   LAN access: http://${getLocalIP()}:${PORT}`);

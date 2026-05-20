@@ -2,7 +2,7 @@
 
 const API = '';
 const submissionId = Number(window.location.pathname.split('/').pop());
-const activeAssignment = localStorage.getItem('active_assignment') || 'midterm';
+const activeAssignment = localStorage.getItem('active_assignment') || 'default';
 let submission = null;
 let allSubmissions = [];
 let currentGrade = null; // The grade being edited (AI or final)

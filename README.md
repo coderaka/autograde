@@ -69,7 +69,7 @@ npm run dev
 ### 方案 B：在本地磁盘直接放置
 1. 在项目根目录的 `rubrics/` 文件夹下新建作业名称目录（如 `hw2`）：
    📂 `/Users/chihao/Projects/autograde/rubrics/hw2/`
-2. 放入 `rubric.json`（可参考 [rubrics/midterm/rubric.json](file:///Users/chihao/Projects/autograde/rubrics/midterm/rubric.json) 格式）和可选的 `answers.md`。
+2. 放入 `rubric.json`（可参考 [rubrics/rubric_template.json](file:///Users/chihao/Projects/autograde/rubrics/rubric_template.json) 格式）和可选的 `answers.md`。
 3. 建立物理 PDF 文件夹：
    📂 `/Users/chihao/Projects/autograde/submissions/hw2/`
    并放入学生的答卷。

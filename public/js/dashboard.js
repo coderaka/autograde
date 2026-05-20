@@ -3,7 +3,7 @@ let allSubmissions = [];
 let currentFilter = 'all';
 let sortField = 'student_id'; // default sort by student ID
 let sortOrder = 'asc';
-let activeAssignment = localStorage.getItem('active_assignment') || 'midterm';
+let activeAssignment = localStorage.getItem('active_assignment') || 'default';
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {

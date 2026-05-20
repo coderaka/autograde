@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { readFileSync, existsSync, rmSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -15,13 +15,12 @@ async function runTests() {
   assert.strictEqual(listRes.status, 200, 'GET /api/assignments should return 200');
   const assignments = await listRes.json();
   console.log('Assignments list on load:', assignments);
-  assert.ok(assignments.length >= 1, 'Should have at least midterm assignment');
-  assert.strictEqual(assignments[0].key, 'midterm', 'First assignment should be midterm');
+  assert.ok(Array.isArray(assignments), 'GET /api/assignments should return a valid array');
 
   // Test 2: Create new assignment
   console.log('\n2. Testing POST /api/assignments...');
   const testKey = 'hw_test_' + Date.now();
-  const testTitle = ' 测试作业 ' + testKey;
+  const testTitle = '测试作业 ' + testKey;
   const dummyRubric = {
     assignment: testTitle,
     total_score: 10,
@@ -32,14 +31,14 @@ async function runTests() {
         max_score: 10,
         sub_questions: [
           {
-            question_id: '1a',
+            id: '1a',
             title: '第一问',
             max_score: 5,
             key_points: ['写对公式'],
             common_mistakes: []
           },
           {
-            question_id: '1b',
+            id: '1b',
             title: '第二问',
             max_score: 5,
             key_points: ['算出数值'],
@@ -121,82 +120,139 @@ async function runTests() {
   // Test 5: Backup & Perfect Restoration
   console.log('\n5. Testing Backup Export/Import pipeline...');
   
-  // Let's get the midterm backup
-  const exportRes = await fetch(`${BASE_URL}/api/submissions/export-backup?assignment=midterm`);
+  // Create a dummy PDF submission folder and file for testKey
+  const testSubmissionsDir = join(__dirname, '..', 'submissions', testKey);
+  if (!existsSync(testSubmissionsDir)) {
+    mkdirSync(testSubmissionsDir, { recursive: true });
+  }
+  writeFileSync(join(testSubmissionsDir, '1234567890_测试学生.pdf'), '%PDF-1.4 mock content');
+  
+  // Hit scan-submissions to register it in the database
+  console.log('Scanning submissions directory to register mock student...');
+  const scanRes = await fetch(`${BASE_URL}/api/scan-submissions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assignment: testKey })
+  });
+  assert.strictEqual(scanRes.status, 200, 'scan-submissions should return 200');
+  const scanResult = await scanRes.json();
+  console.log('Scan result:', scanResult);
+  assert.strictEqual(scanResult.imported, 1, 'Should import 1 mock submission');
+
+  // Let's grade this mock submission
+  const detailRes = await fetch(`${BASE_URL}/api/submissions?assignment=${testKey}`);
+  const allSubs = await detailRes.json();
+  const serverSub = allSubs.find(s => s.pdf_path.includes(testKey));
+  assert.ok(serverSub, 'Mock submission should exist on server');
+  console.log('Found mock submission registered in DB:', serverSub);
+
+  console.log('Manually updating identity for the mock student to link student_id...');
+  const identRes = await fetch(`${BASE_URL}/api/submissions/${serverSub.id}/identity`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id: '1234567890',
+      student_name: '测试学生'
+    })
+  });
+  assert.strictEqual(identRes.status, 200, 'Identity update should succeed');
+
+  console.log('Grading mock submission...');
+  const gradeRes = await fetch(`${BASE_URL}/api/submissions/${serverSub.id}/grade`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grade: {
+        student_id: '1234567890',
+        student_name: '测试学生',
+        questions: [
+          {
+            question_id: '1a',
+            max_score: 5,
+            awarded_score: 4,
+            is_correct: false,
+            error_description: '步骤遗漏',
+            reasoning: '未写出极限公式',
+            needs_review: false
+          },
+          {
+            question_id: '1b',
+            max_score: 5,
+            awarded_score: 5,
+            is_correct: true,
+            error_description: '',
+            reasoning: '完全正确',
+            needs_review: false
+          }
+        ],
+        total_score: 9,
+        overall_comment: '表现不错，继续努力。'
+      },
+      graded_by: 'Test TA'
+    })
+  });
+  assert.strictEqual(gradeRes.status, 200, 'Mock grading should succeed');
+
+  // Export backup
+  console.log('Exporting backup...');
+  const exportRes = await fetch(`${BASE_URL}/api/submissions/export-backup?assignment=${testKey}`);
   assert.strictEqual(exportRes.status, 200, 'Export backup should return 200');
   const backupData = await exportRes.json();
   
-  assert.strictEqual(backupData.assignment, 'midterm', 'Backup assignment key should match');
-  assert.ok(Array.isArray(backupData.submissions), 'Backup should contain submissions array');
-  console.log(`Exported backup containing ${backupData.submissions.length} submissions.`);
+  assert.strictEqual(backupData.assignment, testKey, 'Backup assignment key should match');
+  assert.strictEqual(backupData.submissions.length, 1, 'Backup should contain exactly 1 submission');
+  const backupSub = backupData.submissions[0];
+  assert.strictEqual(backupSub.student_id, '1234567890', 'Backup student ID should match');
+  assert.strictEqual(backupSub.total_score, 9, 'Backup total score should match');
+  console.log('Exported backup containing mock submission successfully.');
 
-  // Let's modify a student's grade dynamically to simulate a TA change, then restore and verify.
-  // First, find a student in backup who has a graded submission
-  const testSub = backupData.submissions.find(s => s.status === 'reviewed' || s.status === 'ai_graded');
-  if (!testSub) {
-    console.log('⚠️ No graded submissions found in database, skipping restoration verification (this is fine on an empty database).');
-  } else {
-    console.log(`Found graded student in backup for test: ${testSub.student_name} (${testSub.student_id})`);
-    
-    // Check their current total score on the server
-    const detailRes = await fetch(`${BASE_URL}/api/submissions?assignment=midterm`);
-    const allSubs = await detailRes.json();
-    const serverSub = allSubs.find(s => s.student_id === testSub.student_id);
-    assert.ok(serverSub, 'Student should exist on server');
-    const originalScore = serverSub.total_score;
-    const originalNotes = serverSub.notes || '';
-    
-    console.log(`Original score for ${testSub.student_name}: ${originalScore}, Notes: "${originalNotes}"`);
+  // Modify grade temporarily
+  console.log('Modifying grade temporarily to simulate changes...');
+  const modRes = await fetch(`${BASE_URL}/api/submissions/${serverSub.id}/grade`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grade: {
+        student_id: '1234567890',
+        student_name: '测试学生',
+        questions: [],
+        total_score: 0,
+        overall_comment: 'Modified Comment'
+      },
+      graded_by: 'Test Runner'
+    })
+  });
+  assert.strictEqual(modRes.status, 200, 'Saving modified grade should succeed');
 
-    // Let's simulate a database overwrite by saving a modified grade directly to the database via API
-    // We will save notes as "TEMPORARY_MODIFICATION_FOR_TESTING" and score as 0
-    console.log('Modifying grade temporarily...');
-    const saveRes = await fetch(`${BASE_URL}/api/submissions/${serverSub.id}/grade`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grade: {
-          student_id: testSub.student_id,
-          student_name: testSub.student_name,
-          questions: [],
-          total_score: 0,
-          overall_comment: 'Modified Comment'
-        },
-        graded_by: 'Test Runner'
-      })
-    });
-    assert.strictEqual(saveRes.status, 200, 'Saving modified grade should succeed');
+  // Verify it indeed changed
+  const checkRes = await fetch(`${BASE_URL}/api/submissions?assignment=${testKey}`);
+  const checkSubs = await checkRes.json();
+  const checkSub = checkSubs.find(s => s.id === serverSub.id);
+  assert.strictEqual(checkSub.total_score, 0, 'Score should now be 0');
 
-    // Double check that it indeed changed
-    const detailRes2 = await fetch(`${BASE_URL}/api/submissions?assignment=midterm`);
-    const allSubs2 = await detailRes2.json();
-    const serverSub2 = allSubs2.find(s => s.student_id === testSub.student_id);
-    assert.strictEqual(serverSub2.total_score, 0, 'Score should now be 0');
+  // Restore from backup
+  console.log('Restoring from backup...');
+  const importRes = await fetch(`${BASE_URL}/api/submissions/import-backup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ backupData })
+  });
+  assert.strictEqual(importRes.status, 200, 'Import backup should return 200');
+  const importResult = await importRes.json();
+  assert.strictEqual(importResult.success, true, 'Import should succeed');
+  console.log(`Import restore counts: submissions=${importResult.submissions_restored}, chats=${importResult.chat_messages_restored}`);
 
-    // Now, restore from backupData!
-    console.log('Restoring from backup...');
-    const importRes = await fetch(`${BASE_URL}/api/submissions/import-backup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ backupData })
-    });
-    assert.strictEqual(importRes.status, 200, 'Import backup should return 200');
-    const importResult = await importRes.json();
-    assert.strictEqual(importResult.success, true, 'Import should succeed');
-    console.log(`Import restore counts: submissions=${importResult.submissions_restored}, chats=${importResult.chat_messages_restored}`);
-
-    // Verify it is restored perfectly to originalScore and originalNotes
-    const detailRes3 = await fetch(`${BASE_URL}/api/submissions?assignment=midterm`);
-    const allSubs3 = await detailRes3.json();
-    const serverSub3 = allSubs3.find(s => s.student_id === testSub.student_id);
-    assert.strictEqual(serverSub3.total_score, originalScore, 'Restored score should match original');
-    console.log('✅ Perfect restoration verified successfully.');
-  }
+  // Verify perfect restoration
+  const finalCheckRes = await fetch(`${BASE_URL}/api/submissions?assignment=${testKey}`);
+  const finalCheckSubs = await finalCheckRes.json();
+  const finalCheckSub = finalCheckSubs.find(s => s.id === serverSub.id);
+  assert.strictEqual(finalCheckSub.total_score, 9, 'Restored score should match original 9');
+  assert.strictEqual(finalCheckSub.notes, '表现不错，继续努力。', 'Restored comment should match');
+  console.log('✅ Perfect restoration verified successfully.');
 
   // Cleanup: Delete the created test assignment folder
   console.log('\n🧹 Cleaning up test directories...');
   const testRubricDir = join(__dirname, '..', 'rubrics', testKey);
-  const testSubmissionsDir = join(__dirname, '..', 'submissions', testKey);
   if (existsSync(testRubricDir)) {
     rmSync(testRubricDir, { recursive: true, force: true });
   }

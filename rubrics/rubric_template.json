@@ -1,0 +1,36 @@
+{
+  "assignment": "作业/考试标题",
+  "total_score": 100,
+  "questions": [
+    {
+      "question_id": "1",
+      "title": "第一大题 基础计算",
+      "max_score": 20,
+      "sub_questions": [
+        {
+          "id": "1a",
+          "title": "第一小问",
+          "max_score": 10,
+          "key_points": [
+            "正确写出计算公式 (5分)",
+            "计算结果数值准确 (5分)"
+          ],
+          "common_mistakes": [
+            "公式符号写错 (扣3分)",
+            "计算粗心导致数值偏差 (扣2分)"
+          ]
+        },
+        {
+          "id": "1b",
+          "title": "第二小问",
+          "max_score": 10,
+          "key_points": [
+            "正确化简表达式 (5分)",
+            "写出最终的约束条件 (5分)"
+          ],
+          "common_mistakes": []
+        }
+      ]
+    }
+  ]
+}

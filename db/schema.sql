@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS students (
 CREATE TABLE IF NOT EXISTS submissions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   student_id TEXT REFERENCES students(id),
-  assignment TEXT NOT NULL DEFAULT 'midterm',
+  assignment TEXT NOT NULL DEFAULT 'default',
   pdf_path TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   ai_grade_json TEXT,

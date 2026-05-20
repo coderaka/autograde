@@ -70,7 +70,7 @@ The system supports two convenient workflows for creating new assignments:
 ### Approach B: Manual Disk Layout Mode
 1. In the project root, create a new subfolder in `rubrics/` with your assignment key:
    📂 `/Users/chihao/Projects/autograde/rubrics/hw2/`
-2. Add your structured `rubric.json` (see [rubrics/midterm/rubric.json](file:///Users/chihao/Projects/autograde/rubrics/midterm/rubric.json) for reference) and an optional `answers.md` standard answer.
+2. Add your structured `rubric.json` (see [rubrics/rubric_template.json](file:///Users/chihao/Projects/autograde/rubrics/rubric_template.json) for reference) and an optional `answers.md` standard answer.
 3. Create the corresponding PDF submission folder:
    📂 `/Users/chihao/Projects/autograde/submissions/hw2/`
    and copy all student PDF scans inside.

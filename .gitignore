@@ -7,7 +7,6 @@ node_modules/
 # Student submissions (privacy)
 submissions/*
 !submissions/.gitkeep
-!submissions/midterm/.gitkeep
 
 # Rubric answers (course-specific)
 rubrics/*/answers.md
