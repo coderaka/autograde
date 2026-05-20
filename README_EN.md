@@ -32,7 +32,7 @@ Ensure your local machine has [Node.js](https://nodejs.org/) installed (v18+ rec
 
 ### 2. Clone Repository & Install Dependencies
 ```bash
-git clone https://github.com/zchihao/autograde.git
+git clone https://github.com/coderaka/autograde.git
 cd autograde
 npm install
 ```

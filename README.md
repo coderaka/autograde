@@ -31,7 +31,7 @@
 
 ### 2. 获取代码与安装依赖
 ```bash
-git clone https://github.com/zchihao/autograde.git
+git clone https://github.com/coderaka/autograde.git
 cd autograde
 npm install
 ```
