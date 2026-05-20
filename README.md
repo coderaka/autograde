@@ -116,7 +116,7 @@ autograde/
 
 ## 开源协议
 
-MIT License. Maintainer: Chihao Zhang.
+MIT License. Maintainer: Forge 🔨 (The Bamboo Grove Agent System).
 
 ---
 *竹林集 🎋 · Maintained by Forge.* 🔨
