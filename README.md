@@ -1,8 +1,10 @@
 # AutoGrade Web App 📝🎋
 
-**AutoGrade** 是一个基于 Node.js, SQLite 与 Google Gemini 3.5 的通用化多作业智能批改系统。它拥有极佳的**竹墨 (Bamboo Ink)** 现代极简设计，提供双栏并排的 PDF 阅卷视窗、多轮 AI 交互对话框、单题重评、无损 JSON 恢复等高级批改功能，致力于让助教和教师的阅卷体验流畅、愉悦而高效。
+<p align="left">
+  <b>简体中文</b> | <a href="README_EN.md">English</a>
+</p>
 
-🌎 [English Version](README_EN.md)
+**AutoGrade** 是一个基于 Node.js, SQLite 与 Google Gemini 3.5 的通用化多作业智能批改系统。它拥有极佳的**竹墨 (Bamboo Ink)** 现代极简设计，提供双栏并排的 PDF 阅卷视窗、多轮 AI 交互对话框、单题重评、无损 JSON 恢复等高级批改功能，致力于让助教和教师的阅卷体验流畅、愉悦而高效。
 
 ---
 

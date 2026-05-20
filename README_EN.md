@@ -1,5 +1,9 @@
 # AutoGrade Web App 📝🎋
 
+<p align="left">
+  <a href="README.md">简体中文</a> | <b>English</b>
+</p>
+
 **AutoGrade** is a universal, multi-assignment homework grading platform powered by Node.js, SQLite, and Google Gemini 3.5. Designed with a premium **竹墨 (Bamboo Ink)** modern minimalist aesthetic, it provides a seamless dual-pane side-by-side grading view, interactive multi-turn AI chat interfaces, focused single-question regrading, and lossless JSON database restorations. It is engineered to make the grading process fluid, enjoyable, and highly efficient for TAs and instructors alike.
 
 ---
