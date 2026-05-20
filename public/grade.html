@@ -54,6 +54,10 @@
             <p>加载评分数据...</p>
           </div>
         </div>
+        <div class="model-selector-bar" style="margin-top: 16px; padding: 12px 16px; border: 1px dashed var(--border); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+          <span style="font-size: 0.82rem; color: var(--text-secondary); display: flex; align-items: center; gap: 4px;">🎯 <span>重评模型</span></span>
+          <select id="regrade-model-select" style="background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 8px; font-size: 0.8rem; cursor: pointer; min-width: 140px; outline: none; transition: border-color var(--transition);"></select>
+        </div>
         <div class="total-score-bar">
           <span>总分</span>
           <span class="total-score-value" id="total-score">— / 120</span>

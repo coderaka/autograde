@@ -254,7 +254,7 @@ document.getElementById('btn-regrade').addEventListener('click', async () => {
     const res = await fetch(`${API}/api/submissions/${submissionId}/ai-grade`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ model: document.getElementById('regrade-model-select').value }),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -361,5 +361,40 @@ function showToast(message, type = 'info') {
   setTimeout(() => toast.remove(), 5000);
 }
 
+// ── Model Selector ──
+async function loadModelConfig() {
+  try {
+    const res = await fetch(`${API}/api/model`);
+    const data = await res.json();
+    const select = document.getElementById('regrade-model-select');
+    if (!select) return;
+    select.innerHTML = '';
+    for (const [id, info] of Object.entries(data.models)) {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = info.label;
+      if (id === data.current) opt.selected = true;
+      select.appendChild(opt);
+    }
+  } catch (err) {
+    console.error('Failed to load model config:', err);
+  }
+}
+
+document.getElementById('regrade-model-select').addEventListener('change', async (e) => {
+  try {
+    const res = await fetch(`${API}/api/model`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: e.target.value }),
+    });
+    if (!res.ok) throw new Error('切换失败');
+    showToast(`重评模型已切换为 ${e.target.value}`, 'success');
+  } catch (err) {
+    showToast('重评模型切换失败', 'error');
+  }
+});
+
 // ── Init ──
+loadModelConfig();
 loadSubmission();

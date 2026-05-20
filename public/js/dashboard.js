@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function setupEventListeners() {
   document.getElementById('btn-scan').addEventListener('click', scanSubmissions);
+  document.getElementById('btn-sync-roster').addEventListener('click', syncRoster);
   document.getElementById('btn-batch-grade').addEventListener('click', batchGrade);
   document.getElementById('btn-export').addEventListener('click', exportGrades);
 
@@ -239,10 +240,10 @@ function renderTable() {
       reviewed: '已确认', finalized: '已锁定', error: '出错'
     }[sub.status] || sub.status;
 
-    // Dim temp IDs that start with _scan_
-    const studentIdDisplay = sub.student_id?.startsWith('_scan_')
+    // Dim temp IDs or nulls that are unidentified
+    const studentIdDisplay = (!sub.student_id || sub.student_id.startsWith('_scan_'))
       ? `<span style="color:var(--text-muted);font-style:italic;">待识别</span>`
-      : sub.student_id || '—';
+      : sub.student_id;
 
     return `<tr>
       <td>${i + 1}</td>
@@ -281,6 +282,26 @@ async function scanSubmissions() {
     loadData();
   } catch (err) {
     showToast('扫描失败: ' + err.message, 'error');
+  }
+}
+
+async function syncRoster() {
+  showToast('正在与花名册同步...', 'info');
+  try {
+    const res = await fetch(`${API}/api/sync-roster`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignment: 'midterm' }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`同步完成：匹配并更新了 ${data.updated} 份卷子`, 'success');
+      loadData();
+    } else {
+      showToast('同步失败: ' + data.error, 'error');
+    }
+  } catch (err) {
+    showToast('同步失败: ' + err.message, 'error');
   }
 }
 
@@ -410,11 +431,19 @@ function handleGradingEvent(event) {
 
     case 'grading_done':
       addLogEntry('done', `${event.progress ? `[${event.progress}] ` : ''}✅ ${event.label} — ${event.score}/120`, event.time);
+      if (!event.progress) {
+        isGrading = false;
+        updateLogHeader(false);
+      }
       if (!isReplayingHistory) loadData();
       break;
 
     case 'grading_error':
       addLogEntry('error', `${event.progress ? `[${event.progress}] ` : ''}❌ ${event.label} — ${event.error}`, event.time);
+      if (!event.progress) {
+        isGrading = false;
+        updateLogHeader(false);
+      }
       if (!isReplayingHistory) loadData();
       break;
 

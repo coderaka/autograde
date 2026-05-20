@@ -109,59 +109,97 @@ function normalizeGrade(grade) {
   return grade;
 }
 
+// Helper: parse student_id and name from filename
+function parseFilename(name) {
+  const parts = name.split('_');
+  if (parts.length >= 2) {
+    const possibleId = parts[0].trim();
+    const possibleName = parts.slice(1).join('_').trim();
+    // Validate if possibleId looks like a real standard numeric student ID (5-15 digits)
+    if (/^\d{5,15}$/.test(possibleId)) {
+      return { studentId: possibleId, studentName: possibleName };
+    }
+  }
+  return { studentId: null, studentName: null };
+}
+
 // ── Student Identity Reconciliation ──
 // After AI reads student_id and name from PDF, match against roster
 // and rename the PDF file to standard format
-function reconcileStudentIdentity(submissionId, aiResult) {
+function reconcileStudentIdentity(submissionId, aiResult, force = false) {
   const sub = db.getSubmission(submissionId);
   if (!sub) return;
 
   // Skip reconciliation if student already has a confirmed identity
-  // (i.e. not a scan placeholder) — prevents re-grade from overwriting correct info
-  if (sub.student_id && !sub.student_id.startsWith('_scan_')) return;
+  // (i.e. a standard numeric ID that matches a roster student).
+  if (!force && sub.student_id) {
+    const isRosterStudent = db.getStudentById(sub.student_id);
+    const isStandardFormat = /^\d{5,15}$/.test(sub.student_id);
+    if (isRosterStudent && isStandardFormat) {
+      return;
+    }
+  }
 
   const aiStudentId = aiResult.student_id;
   const aiStudentName = aiResult.student_name;
 
   if (!aiStudentId || aiStudentId === 'unknown') return;
 
-  // Check if this student_id exists in roster
-  let rosterStudent = db.getStudentById(aiStudentId);
+  // Check roster for ID and Name separately to resolve any conflict/typo
+  let rosterStudent = null;
+  const studentById = db.getStudentById(aiStudentId);
+  const studentByName = aiStudentName && aiStudentName !== 'unknown' ? db.findStudentByName(aiStudentName) : null;
 
-  if (!rosterStudent && aiStudentName && aiStudentName !== 'unknown') {
-    // Try to find by name (fuzzy: exact match for now)
-    rosterStudent = db.findStudentByName(aiStudentName);
+  if (studentById && studentByName) {
+    if (studentById.id === studentByName.id) {
+      rosterStudent = studentById;
+    } else {
+      // Conflict: AI-extracted ID matches one student, but AI-extracted Name matches another.
+      // Trust the name match because digit OCR typos are extremely common in AI parsing
+      // (e.g. 524030910186 vs 524030910196).
+      console.log(`⚠️ Identity conflict for submission ${submissionId}: AI ID matches ${studentById.name} (${studentById.id}) but AI Name matches ${studentByName.name} (${studentByName.id}). Trusting name match.`);
+      rosterStudent = studentByName;
+    }
+  } else if (studentByName) {
+    // Only Name matches a roster student (ID did not match anything)
+    rosterStudent = studentByName;
+  } else if (studentById) {
+    // Only ID matches a roster student (Name did not match anything)
+    rosterStudent = studentById;
   }
 
-  // Determine the canonical student_id
-  const canonicalId = rosterStudent ? rosterStudent.id : aiStudentId;
-  const canonicalName = rosterStudent ? rosterStudent.name : (aiStudentName || 'unknown');
+  // Only reconcile if we actually found a matching student in the roster.
+  // We do NOT add new/unidentified students to the roster automatically.
+  if (rosterStudent) {
+    const canonicalId = rosterStudent.id;
+    const canonicalName = rosterStudent.name;
 
-  // Upsert student if not in roster
-  if (!rosterStudent) {
-    db.upsertStudent(canonicalId, canonicalName);
-  }
+    // Rename PDF to standard format: 学号_姓名.pdf
+    const oldPdfPath = resolve(join(__dirname, 'submissions', sub.pdf_path));
+    const dir = dirname(oldPdfPath);
+    const newFilename = `${canonicalId}_${canonicalName}.pdf`;
+    const newPdfPath = join(dir, newFilename);
+    const newRelPath = join(dirname(sub.pdf_path), newFilename);
 
-  // Rename PDF to standard format: 学号_姓名.pdf
-  const oldPdfPath = resolve(join(__dirname, 'submissions', sub.pdf_path));
-  const dir = dirname(oldPdfPath);
-  const newFilename = `${canonicalId}_${canonicalName}.pdf`;
-  const newPdfPath = join(dir, newFilename);
-  const newRelPath = join(dirname(sub.pdf_path), newFilename);
+    let renamed = false;
+    if (oldPdfPath !== newPdfPath && !existsSync(newPdfPath)) {
+      try {
+        renameSync(oldPdfPath, newPdfPath);
+        console.log(`📝 Renamed: ${basename(oldPdfPath)} → ${newFilename}`);
+        renamed = true;
+      } catch (err) {
+        console.error(`⚠️ Failed to rename ${basename(oldPdfPath)}:`, err.message);
+      }
+    }
 
-  // Only rename if different and new path doesn't exist
-  if (oldPdfPath !== newPdfPath && !existsSync(newPdfPath)) {
-    try {
-      renameSync(oldPdfPath, newPdfPath);
-      console.log(`📝 Renamed: ${basename(oldPdfPath)} → ${newFilename}`);
+    // If successfully renamed or the target standard file already exists, update both student_id and pdf_path
+    if (renamed || existsSync(newPdfPath)) {
       db.updateSubmissionStudent(submissionId, canonicalId, newRelPath);
-    } catch (err) {
-      console.error(`⚠️ Failed to rename ${basename(oldPdfPath)}:`, err.message);
+    } else {
       db.updateSubmissionStudent(submissionId, canonicalId);
     }
   } else {
-    // Just update student_id link
-    db.updateSubmissionStudent(submissionId, canonicalId);
+    console.log(`⚠️ No roster match found for AI extracted student ID: ${aiStudentId}, Name: ${aiStudentName}`);
   }
 }
 
@@ -254,7 +292,7 @@ app.post('/api/submissions/:id/ai-grade', async (req, res) => {
     db.updateAiGrade(sub.id, result);
 
     // Reconcile student identity from AI output
-    reconcileStudentIdentity(sub.id, result);
+    reconcileStudentIdentity(sub.id, result, true);
 
     const updatedSub = db.getSubmission(sub.id);
     const finalLabel = updatedSub.student_name || updatedSub.student_id || label;
@@ -369,6 +407,7 @@ app.get('/api/stats', (req, res) => {
 // ── Scan submissions directory ──
 app.post('/api/scan-submissions', (req, res) => {
   const assignment = req.body.assignment || 'midterm';
+  syncSubmissionsWithFilesystem(assignment);
   const dir = join(__dirname, 'submissions', assignment);
   if (!existsSync(dir)) return res.status(404).json({ error: 'Directory not found' });
 
@@ -377,21 +416,13 @@ app.post('/api/scan-submissions', (req, res) => {
 
   for (const file of files) {
     const name = basename(file, '.pdf');
-    // Try to parse student_id and name from filename: "学号_姓名.pdf"
-    const parts = name.split('_');
-    let studentId, studentName;
+    const { studentId } = parseFilename(name);
 
-    if (parts.length >= 2) {
-      studentId = parts[0];
-      studentName = parts.slice(1).join('_');
-    } else {
-      // Unknown student — use filename as temp ID
-      studentId = `_scan_${name}`;
-      studentName = name;
-    }
+    // Only link if the student actually exists in our imported roster
+    const rosterStudent = studentId ? db.getStudentById(studentId) : null;
+    const targetId = rosterStudent ? rosterStudent.id : null;
 
-    db.upsertStudent(studentId, studentName);
-    const subId = db.createSubmission(studentId, assignment, join(assignment, file));
+    const subId = db.createSubmission(targetId, assignment, join(assignment, file));
     if (subId) imported++;
   }
 
@@ -428,25 +459,95 @@ app.post('/api/upload-pdfs', pdfUpload.array('pdfs', 200), (req, res) => {
 
     // Register in DB
     const name = basename(safeName, '.pdf');
-    const parts = name.split('_');
-    let studentId, studentName;
+    const { studentId } = parseFilename(name);
 
-    if (parts.length >= 2) {
-      studentId = parts[0];
-      studentName = parts.slice(1).join('_');
-    } else {
-      studentId = `_scan_${name}`;
-      studentName = name;
-    }
+    // Only link if the student actually exists in our imported roster
+    const rosterStudent = studentId ? db.getStudentById(studentId) : null;
+    const targetId = rosterStudent ? rosterStudent.id : null;
 
-    db.upsertStudent(studentId, studentName);
-    db.createSubmission(studentId, assignment, join(assignment, safeName));
+    db.createSubmission(targetId, assignment, join(assignment, safeName));
     imported++;
     results.push({ name: safeName, status: 'imported' });
   }
 
   console.log(`📤 Uploaded ${imported} PDFs`);
   res.json({ imported, total: req.files?.length || 0, results });
+});
+
+// ── Sync roster with unmatched submissions ──
+app.post('/api/sync-roster', (req, res) => {
+  try {
+    const assignment = req.body.assignment || 'midterm';
+    syncSubmissionsWithFilesystem(assignment);
+    const subs = db.getSubmissions(assignment);
+    let updated = 0;
+
+    for (const sub of subs) {
+      // Check if this submission is already correctly linked to a confirmed roster student
+      const isStandardFormat = /^\d{5,15}$/.test(sub.student_id);
+      const isRosterStudent = sub.student_id ? db.getStudentById(sub.student_id) : null;
+      const isConfirmed = isStandardFormat && isRosterStudent;
+
+      if (!isConfirmed) {
+        // Attempt 1: Check if the filename contains a standard ID that exists in the roster
+        const filename = basename(sub.pdf_path, '.pdf');
+        const { studentId } = parseFilename(filename);
+
+        if (studentId) {
+          const rosterStudent = db.getStudentById(studentId);
+          if (rosterStudent) {
+            const oldPdfPath = resolve(join(__dirname, 'submissions', sub.pdf_path));
+            const dir = dirname(oldPdfPath);
+            const newFilename = `${rosterStudent.id}_${rosterStudent.name}.pdf`;
+            const newPdfPath = join(dir, newFilename);
+            const newRelPath = join(dirname(sub.pdf_path), newFilename);
+
+            let renamed = false;
+            if (oldPdfPath !== newPdfPath && !existsSync(newPdfPath)) {
+              try {
+                renameSync(oldPdfPath, newPdfPath);
+                console.log(`📝 Synced & Renamed: ${basename(oldPdfPath)} → ${newFilename}`);
+                renamed = true;
+              } catch (err) {
+                console.error(`⚠️ Failed to rename:`, err.message);
+              }
+            }
+
+            if (renamed || existsSync(newPdfPath)) {
+              db.updateSubmissionStudent(sub.id, rosterStudent.id, newRelPath);
+            } else {
+              db.updateSubmissionStudent(sub.id, rosterStudent.id);
+            }
+            updated++;
+            continue;
+          }
+        }
+
+        // Attempt 2: Check if AI grading results exist and try matching them against the roster
+        const gradeJsonStr = sub.final_grade_json || sub.ai_grade_json;
+        if (gradeJsonStr) {
+          try {
+            const grade = JSON.parse(gradeJsonStr);
+            const prevStudentId = sub.student_id;
+
+            reconcileStudentIdentity(sub.id, grade, true); // force reconciliation
+
+            const updatedSub = db.getSubmission(sub.id);
+            if (updatedSub.student_id && updatedSub.student_id !== prevStudentId) {
+              updated++;
+            }
+          } catch (err) {
+            console.error(`Error parsing grade JSON for sync of sub ${sub.id}:`, err.message);
+          }
+        }
+      }
+    }
+
+    res.json({ success: true, updated });
+  } catch (err) {
+    console.error('Roster sync error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Import roster ──
@@ -537,8 +638,64 @@ function getLocalIP() {
   return 'localhost';
 }
 
+// ── Sync database submissions with physical files ──
+function syncSubmissionsWithFilesystem(assignment = 'midterm') {
+  console.log(`🧹 Syncing database submissions with filesystem for ${assignment}...`);
+  try {
+    const subs = db.getSubmissions(assignment);
+    
+    // 1. Delete records where the PDF file no longer exists
+    for (const sub of subs) {
+      const fullPath = resolve(join(__dirname, 'submissions', sub.pdf_path));
+      if (!existsSync(fullPath)) {
+        console.log(`🗑️ PDF not found on disk, deleting DB record: ${sub.pdf_path} (ID: ${sub.id})`);
+        db.deleteSubmission(sub.id);
+      }
+    }
+
+    // Reload subs after deletion
+    const activeSubs = db.getSubmissions(assignment);
+
+    // 2. Resolve duplicates (same student_id, same assignment)
+    // If we have multiple entries for the same student on the same assignment:
+    // - Keep the graded one ('reviewed' or 'ai_graded')
+    // - If both are the same status, keep the one with the larger ID
+    const studentMap = {}; // student_id -> list of subs
+    for (const sub of activeSubs) {
+      if (sub.student_id) {
+        if (!studentMap[sub.student_id]) {
+          studentMap[sub.student_id] = [];
+        }
+        studentMap[sub.student_id].push(sub);
+      }
+    }
+
+    for (const studentId in studentMap) {
+      const list = studentMap[studentId];
+      if (list.length > 1) {
+        list.sort((a, b) => {
+          const scoreA = a.status === 'reviewed' ? 3 : (a.status === 'ai_graded' ? 2 : 1);
+          const scoreB = b.status === 'reviewed' ? 3 : (b.status === 'ai_graded' ? 2 : 1);
+          if (scoreA !== scoreB) return scoreB - scoreA;
+          return b.id - a.id;
+        });
+
+        // Keep index 0, delete the rest
+        const toDelete = list.slice(1);
+        for (const del of toDelete) {
+          console.log(`🗑️ Duplicate student submission, deleting DB record: ${del.pdf_path} (ID: ${del.id})`);
+          db.deleteSubmission(del.id);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error during database-filesystem sync:', err);
+  }
+}
+
 async function main() {
   await initDb();
+  syncSubmissionsWithFilesystem('midterm');
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🎓 AutoGrade v2 running at http://localhost:${PORT}`);
     console.log(`   LAN access: http://${getLocalIP()}:${PORT}`);
