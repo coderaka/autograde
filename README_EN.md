@@ -63,10 +63,19 @@ In the AutoGrade system, the official class roster (Roster) is stored inside the
 ### 2. Preparing and Seeding the Roster
 The roster resides in SQLite's `students` table. The schema contains three columns: `id` (Student ID / Primary Key), `name` (Student Name), and `email` (Email / Optional).
 
-You can prepare and seed your class list database using either of the following approaches:
+You can prepare and seed your class list database using any of the following approaches:
 
-#### Approach A: Seeding from an Excel Class List via Node.js (Highly Recommended)
-This is the most common and automated workflow. Export your roster Excel spreadsheet (containing Student ID, Name, and optional Email columns) and run a quick importer script like `scratch/sync_emails.js`.
+#### Approach A: Direct Excel Upload in Front-End UI (Highly Recommended 🌟)
+This is the simplest, most intuitive, and highly recommended option:
+1. **Prepare your Excel File**: Create a new Excel spreadsheet with student columns. The column header names can be:
+   - **Student ID column**: `学号`, `Student ID`, or `id`.
+   - **Name column**: `姓名`, `Name`, or `name`.
+   - **Email column (optional)**: `邮箱`, `Email`, or `email`.
+2. **Upload in the UI**: Open the AutoGrade dashboard in your browser. On the top-left **“学生花名册”** (Student Roster) panel, click the **“📋 导入花名册”** (Import Roster) button, and select your Excel sheet.
+3. The server will parse, de-duplicate, and write records to the local database in a split second, and the Dashboard roster count will instantly refresh!
+
+#### Approach B: Importing from Excel via Node.js Script (For Off-line/Automation Tasks)
+If you need automated scheduling or off-line pipeline seeding, you can use a Node.js script in the workspace (similar to `scratch/sync_emails.js`).
 1. Install `xlsx` package in the project directory:
    ```bash
    npm install xlsx
@@ -95,8 +104,8 @@ This is the most common and automated workflow. Export your roster Excel spreads
    main().catch(console.error);
    ```
 
-#### Approach B: Direct Batch SQL Insertions
-If you are comfortable using direct database clients (e.g. DBeaver, DB Browser for SQLite), you can connect to `db/autograde.db` and execute standard SQL inserts:
+#### Approach C: Direct Batch SQL Insertions
+If you are comfortable using direct database clients (e.g. DBeaver, DB Browser for SQLite), you can connect directly to `db/autograde.db` and execute standard SQL insertions:
 ```sql
 INSERT INTO students (id, name, email) VALUES 
 ('522030910167', 'Qin Han', 'qinhan@example.edu'),
