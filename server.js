@@ -2,20 +2,20 @@ import 'dotenv/config';
 import express from 'express';
 import { join, dirname, resolve, basename, extname } from 'path';
 import { fileURLToPath } from 'url';
-import { readdirSync, existsSync, renameSync, mkdirSync, copyFileSync, unlinkSync, readFileSync } from 'fs';
+import { readdirSync, existsSync, renameSync, mkdirSync, copyFileSync, unlinkSync, readFileSync, writeFileSync } from 'fs';
 import multer from 'multer';
 import XLSX from 'xlsx';
 import * as db from './lib/db.js';
 import { initDb } from './lib/db.js';
 import { gradeSubmission, buildChatSystemPrompt, loadRubric, gradeSingleQuestion } from './lib/grading-engine.js';
-import { chatAboutSubmission, MODELS, getCurrentModel, setCurrentModel } from './lib/gemini.js';
+import { chatAboutSubmission, MODELS, getCurrentModel, setCurrentModel, generateRubricFromAnswers } from './lib/gemini.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(join(__dirname, 'public')));
 
 // ── Model Config ──
@@ -49,21 +49,167 @@ app.get('/api/submissions', (req, res) => {
   res.json(db.getSubmissions(assignment));
 });
 
+app.get('/api/submissions/export-backup', (req, res) => {
+  const { assignment } = req.query;
+  if (!assignment) {
+    return res.status(400).json({ error: 'Assignment key is required' });
+  }
+
+  try {
+    // 1. Fetch assignment rubric info
+    let rubric = null;
+    let answers = null;
+    try {
+      rubric = loadRubric(assignment);
+      const answersPath = join(__dirname, 'rubrics', assignment, 'answers.md');
+      if (existsSync(answersPath)) {
+        answers = readFileSync(answersPath, 'utf-8');
+      }
+    } catch (e) {
+      console.warn(`Could not load rubric for export: ${assignment}`);
+    }
+
+    // 2. Fetch all submissions from database
+    const submissions = db.getSubmissions(assignment);
+    const backupData = [];
+
+    for (const sub of submissions) {
+      // Fetch associated chat messages
+      const chatMessages = db.getChatMessages(sub.id);
+      backupData.push({
+        student_id: sub.student_id,
+        student_name: sub.student_name,
+        pdf_path: sub.pdf_path,
+        status: sub.status,
+        ai_grade_json: sub.ai_grade_json,
+        final_grade_json: sub.final_grade_json,
+        total_score: sub.total_score,
+        graded_by: sub.graded_by,
+        notes: sub.notes,
+        chat_messages: chatMessages.map(msg => ({
+          role: msg.role,
+          content: msg.content,
+          created_at: msg.created_at,
+        })),
+      });
+    }
+
+    const payload = {
+      assignment,
+      exported_at: new Date().toISOString(),
+      rubric,
+      answers,
+      submissions: backupData,
+    };
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=${assignment}_backup_${new Date().toISOString().slice(0,10)}.json`);
+    res.send(JSON.stringify(payload, null, 2));
+  } catch (err) {
+    console.error('Export backup failed:', err);
+    res.status(500).json({ error: 'Failed to export backup: ' + err.message });
+  }
+});
+
+app.post('/api/submissions/import-backup', (req, res) => {
+  const { backupData } = req.body;
+  if (!backupData || !backupData.submissions) {
+    return res.status(400).json({ error: 'Invalid backup file structure' });
+  }
+
+  const { assignment, rubric, answers, submissions } = backupData;
+  if (!assignment) {
+    return res.status(400).json({ error: 'Missing assignment key in backup file' });
+  }
+
+  try {
+    // 1. (Optional) Restore/write rubric files if they do not exist
+    const rubricDir = join(__dirname, 'rubrics', assignment);
+    const submissionsDir = join(__dirname, 'submissions', assignment);
+    if (!existsSync(rubricDir)) {
+      mkdirSync(rubricDir, { recursive: true });
+    }
+    if (!existsSync(submissionsDir)) {
+      mkdirSync(submissionsDir, { recursive: true });
+    }
+
+    if (rubric) {
+      writeFileSync(join(rubricDir, 'rubric.json'), JSON.stringify(rubric, null, 2), 'utf-8');
+    }
+    if (answers) {
+      writeFileSync(join(rubricDir, 'answers.md'), answers, 'utf-8');
+    }
+
+    delete _maxScoreMaps[assignment];
+
+    let restoreCount = 0;
+    let chatCount = 0;
+
+    // 2. Loop through and restore each submission
+    for (const record of submissions) {
+      // Upsert student first to ensure database foreign key constraint is satisfied
+      if (record.student_id && record.student_id !== 'unknown') {
+        const studentName = record.student_name || 'unknown';
+        db.upsertStudent(record.student_id, studentName);
+      }
+
+      // Restore submission record
+      const subId = db.restoreSubmissionRecord({
+        student_id: record.student_id,
+        assignment: assignment,
+        pdf_path: record.pdf_path,
+        status: record.status,
+        ai_grade_json: record.ai_grade_json,
+        final_grade_json: record.final_grade_json,
+        total_score: record.total_score,
+        graded_by: record.graded_by,
+        notes: record.notes,
+      });
+
+      restoreCount++;
+
+      // Restore chat messages if any
+      if (record.chat_messages && record.chat_messages.length > 0) {
+        db.clearChatMessages(subId);
+        for (const msg of record.chat_messages) {
+          db.addChatMessage(subId, msg.role, msg.content);
+          chatCount++;
+        }
+      }
+    }
+
+    // Trigger filesystem sync for the assignment to ensure any newly matched files on disk are mapped
+    syncSubmissionsWithFilesystem(assignment);
+
+    res.json({
+      success: true,
+      assignment,
+      submissions_restored: restoreCount,
+      chat_messages_restored: chatCount,
+    });
+  } catch (err) {
+    console.error('Import backup failed:', err);
+    res.status(500).json({ error: 'Failed to import backup: ' + err.message });
+  }
+});
+
 app.get('/api/submissions/:id', (req, res) => {
   const sub = db.getSubmission(Number(req.params.id));
   if (!sub) return res.status(404).json({ error: 'Not found' });
   // Parse JSON fields and normalize
-  if (sub.ai_grade_json) sub.ai_grade = normalizeGrade(JSON.parse(sub.ai_grade_json));
-  if (sub.final_grade_json) sub.final_grade = normalizeGrade(JSON.parse(sub.final_grade_json));
+  if (sub.ai_grade_json) sub.ai_grade = normalizeGrade(JSON.parse(sub.ai_grade_json), sub.assignment);
+  if (sub.final_grade_json) sub.final_grade = normalizeGrade(JSON.parse(sub.final_grade_json), sub.assignment);
   res.json(sub);
 });
 
 // Normalize grade field names for frontend compatibility
-// Rubric max scores lookup
-const _maxScoreMap = buildMaxScoreMap();
-function buildMaxScoreMap() {
+// Rubric max scores cache by assignment key
+const _maxScoreMaps = {};
+function getRubricMaxScores(assignment) {
+  const key = assignment || 'midterm';
+  if (_maxScoreMaps[key]) return _maxScoreMaps[key];
   try {
-    const rubricPath = join(__dirname, 'rubrics', 'midterm', 'rubric.json');
+    const rubricPath = join(__dirname, 'rubrics', key, 'rubric.json');
     if (!existsSync(rubricPath)) return {};
     const rubric = JSON.parse(readFileSync(rubricPath, 'utf-8'));
     const map = {};
@@ -72,12 +218,14 @@ function buildMaxScoreMap() {
         map[sq.id] = sq.max_score;
       }
     }
+    _maxScoreMaps[key] = map;
     return map;
   } catch { return {}; }
 }
 
-function normalizeGrade(grade) {
+function normalizeGrade(grade, assignment) {
   if (!grade || !grade.questions) return grade;
+  const maxScoreMap = getRubricMaxScores(assignment);
   for (const q of grade.questions) {
     // Normalize question ID field: id | question_number | question_id → question_id
     if (!q.question_id) {
@@ -93,7 +241,7 @@ function normalizeGrade(grade) {
 
     // Fill max_score from rubric if missing
     if (q.max_score === undefined || q.max_score === null) {
-      q.max_score = _maxScoreMap[q.question_id] || 0;
+      q.max_score = maxScoreMap[q.question_id] || 0;
     }
 
     // Ensure other required fields
@@ -369,7 +517,7 @@ app.post('/api/submissions/:id/ai-grade-question', async (req, res) => {
     }
 
     // Normalize grade questions just to be extra safe
-    grade = normalizeGrade(grade);
+    grade = normalizeGrade(grade, sub.assignment);
 
     // Broadcast SSE start
     broadcast({
@@ -840,6 +988,118 @@ function syncSubmissionsWithFilesystem(assignment = 'midterm') {
     console.error('Error during database-filesystem sync:', err);
   }
 }
+
+// ── Multi-Assignment & Backup APIs ──
+
+app.get('/api/assignments', (req, res) => {
+  try {
+    const rubricsDir = join(__dirname, 'rubrics');
+    if (!existsSync(rubricsDir)) {
+      return res.json([]);
+    }
+
+    const items = readdirSync(rubricsDir, { withFileTypes: true });
+    const assignments = [];
+
+    for (const item of items) {
+      if (item.isDirectory()) {
+        const key = item.name;
+        const rubricPath = join(rubricsDir, key, 'rubric.json');
+        if (existsSync(rubricPath)) {
+          try {
+            const rubric = JSON.parse(readFileSync(rubricPath, 'utf-8'));
+            const subQuestionsCount = (rubric.questions || []).reduce(
+              (sum, q) => sum + (q.sub_questions || []).length, 0
+            );
+            assignments.push({
+              key,
+              title: rubric.assignment || key,
+              total_score: rubric.total_score || 0,
+              questions_count: subQuestionsCount,
+              has_answers: existsSync(join(rubricsDir, key, 'answers.md')),
+            });
+          } catch (e) {
+            console.error(`Error reading rubric for assignment ${key}:`, e);
+          }
+        }
+      }
+    }
+
+    // Default sorting: midterm first, others alphabetically
+    assignments.sort((a, b) => {
+      if (a.key === 'midterm') return -1;
+      if (b.key === 'midterm') return 1;
+      return a.key.localeCompare(b.key);
+    });
+
+    res.json(assignments);
+  } catch (err) {
+    console.error('Error fetching assignments:', err);
+    res.status(500).json({ error: 'Failed to fetch assignments' });
+  }
+});
+
+app.post('/api/assignments', (req, res) => {
+  const { key, title, rubric, answers } = req.body;
+  if (!key || !title || !rubric) {
+    return res.status(400).json({ error: 'Missing required fields: key, title, and rubric are mandatory.' });
+  }
+
+  // Format validation for key (alphanumeric, dash, underscore only)
+  if (!/^[a-zA-Z0-9_-]+$/.test(key)) {
+    return res.status(400).json({ error: 'Invalid assignment key. Only alphanumeric characters, dashes, and underscores are allowed.' });
+  }
+
+  try {
+    const rubricDir = join(__dirname, 'rubrics', key);
+    const submissionsDir = join(__dirname, 'submissions', key);
+
+    // Create directories if they don't exist
+    if (!existsSync(rubricDir)) {
+      mkdirSync(rubricDir, { recursive: true });
+    }
+    if (!existsSync(submissionsDir)) {
+      mkdirSync(submissionsDir, { recursive: true });
+    }
+
+    // Save rubric.json
+    // Ensure assignment title is synchronized in rubric.json
+    const rubricObj = typeof rubric === 'string' ? JSON.parse(rubric) : rubric;
+    rubricObj.assignment = title;
+    writeFileSync(join(rubricDir, 'rubric.json'), JSON.stringify(rubricObj, null, 2), 'utf-8');
+
+    // Save answers.md if provided
+    if (answers !== undefined) {
+      writeFileSync(join(rubricDir, 'answers.md'), answers || '', 'utf-8');
+    }
+
+    // Clear maxScoreMaps cache for this assignment key to force reload
+    delete _maxScoreMaps[key];
+
+    // Trigger dynamic sync right away
+    syncSubmissionsWithFilesystem(key);
+
+    res.json({ success: true, key });
+  } catch (err) {
+    console.error('Error creating assignment:', err);
+    res.status(500).json({ error: 'Failed to create assignment: ' + err.message });
+  }
+});
+
+app.post('/api/assignments/generate-rubric', async (req, res) => {
+  const { answers, title } = req.body;
+  if (!answers) {
+    return res.status(400).json({ error: 'Standard answers text (markdown) is required.' });
+  }
+
+  try {
+    const rubric = await generateRubricFromAnswers(answers, title || '新作业');
+    res.json(rubric);
+  } catch (err) {
+    console.error('AI rubric generation failed:', err);
+    res.status(500).json({ error: 'AI Rubric Generation failed: ' + err.message });
+  }
+});
 
 async function main() {
   await initDb();

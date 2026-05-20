@@ -192,6 +192,16 @@
       0%, 100% { opacity: 1; }
       50% { opacity: 0.7; }
     }
+    @keyframes modalSlideIn {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .modal-overlay {
+      display: none;
+    }
+    .modal-overlay.active {
+      display: flex !important;
+    }
   </style>
 </head>
 <body>
@@ -199,7 +209,12 @@
     <div class="header-title">
       <span class="logo">🎓</span>
       <h1>AutoGrade</h1>
-      <span style="color: var(--text-muted); font-size: 0.85rem; margin-left: 8px;">AI2613 随机过程 · 期中考试</span>
+      <div class="assignment-selector-container" style="display: flex; align-items: center; gap: 8px; margin-left: 12px;">
+        <select id="assignment-select" style="background: transparent; color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 0.85rem; font-weight: 500; cursor: pointer; min-width: 180px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; outline: none; transition: border-color 0.2s ease;">
+          <option value="midterm">期中考试 (Default)</option>
+        </select>
+        <button id="btn-new-assignment" class="icon-btn" title="创建新作业/考试" style="background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-primary); font-size: 0.9rem; transition: all 0.2s ease; padding: 0;">➕</button>
+      </div>
     </div>
     <div class="header-actions">
       <div class="model-selector">
@@ -274,6 +289,11 @@
         <button class="btn btn-secondary" id="btn-scan" title="扫描 submissions 目录">📂 扫描文件</button>
         <button class="btn btn-primary" id="btn-batch-grade" title="批量 AI 批改所有待处理卷子">🤖 批量 AI 批改</button>
         <button class="btn btn-secondary" id="btn-export" title="导出 Excel">📊 导出成绩</button>
+        <button class="btn btn-secondary" id="btn-export-backup" title="导出无损 JSON 备份（含完整评分与 AI 聊天记录）">📤 备份数据</button>
+        <label class="btn btn-secondary" title="导入无损 JSON 备份并完全还原" style="cursor:pointer;">
+          📥 恢复备份
+          <input type="file" id="backup-import-file" accept=".json" style="display:none;">
+        </label>
       </div>
     </div>
 
@@ -313,6 +333,46 @@
   </div>
 
   <div class="toast-container" id="toast-container"></div>
+
+  <!-- Modal: Create New Assignment -->
+  <div class="modal-overlay" id="modal-assignment" style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; transition: all 0.2s ease;">
+    <div class="modal-card" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); width: 100%; max-width: 600px; box-shadow: var(--shadow-lg); overflow: hidden; display: flex; flex-direction: column; max-height: 90vh; animation: modalSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);">
+      <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--bg-elevated);">
+        <h3 style="margin: 0; font-size: 1.1rem; font-weight: 600; color: var(--text-primary);">➕ 新建作业 / 考试</h3>
+        <button type="button" id="btn-close-assignment-modal" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.2rem; padding: 4px; line-height: 1;">&times;</button>
+      </div>
+      <div style="padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;">
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label style="font-size: 0.82rem; font-weight: 500; color: var(--text-muted);">作业唯一标识 (Key)</label>
+          <input type="text" id="input-assignment-key" placeholder="例如: hw1, hw2, midterm" style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text-primary); font-family: inherit; font-size: 0.9rem; outline: none; transition: border-color 0.2s ease;">
+          <small style="color: var(--text-muted); font-size: 0.72rem;">仅支持英文字母、数字、下划线和连字符，将作为文件夹名使用。</small>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label style="font-size: 0.82rem; font-weight: 500; color: var(--text-muted);">作业显示标题 (Title)</label>
+          <input type="text" id="input-assignment-title" placeholder="例如: AI2613 随机过程 第一次作业" style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text-primary); font-family: inherit; font-size: 0.9rem; outline: none; transition: border-color 0.2s ease;">
+        </div>
+        
+        <div style="display: flex; flex-direction: column; gap: 6px; position: relative;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <label style="font-size: 0.82rem; font-weight: 500; color: var(--text-muted);">标准参考答案 (answers.md, 可选)</label>
+            <button type="button" id="btn-generate-rubric" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.75rem; display: flex; align-items: center; gap: 4px; cursor: pointer;" title="基于标准答案，调用 Gemini 智能生成下方的 Rubric 结构！">✨ AI 生成 Rubric</button>
+          </div>
+          <textarea id="input-assignment-answers" placeholder="在这里粘贴该次作业的标准答案及评分大纲 (Markdown 格式)..." style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text-primary); font-family: 'SF Mono', Consolas, monospace; font-size: 0.85rem; min-height: 120px; max-height: 200px; resize: vertical; outline: none; transition: all 0.2s ease;"></textarea>
+          <small style="color: var(--text-muted); font-size: 0.72rem;">填写标准答案后，AI 批改能极高精度地识别考点并精确给分。</small>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label style="font-size: 0.82rem; font-weight: 500; color: var(--text-muted);">评分标准 (rubric.json, 必须)</label>
+          <textarea id="input-assignment-rubric" placeholder="在这里输入或使用 AI 智能生成 JSON 评分标准..." style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text-primary); font-family: 'SF Mono', Consolas, monospace; font-size: 0.82rem; min-height: 160px; max-height: 280px; resize: vertical; outline: none; transition: all 0.2s ease;"></textarea>
+          <small style="color: var(--text-muted); font-size: 0.72rem;">必须是合法的 Rubric JSON 格式。提供标准答案后点击“✨ AI 生成 Rubric”可以全自动编写该字段。</small>
+        </div>
+      </div>
+      <div style="padding: 16px 20px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: flex-end; gap: 10px; background: var(--bg-elevated);">
+        <button type="button" class="btn btn-secondary" id="btn-cancel-assignment" style="padding: 6px 14px; font-size: 0.85rem; cursor: pointer;">取消</button>
+        <button type="button" class="btn btn-primary" id="btn-submit-assignment" style="padding: 6px 14px; font-size: 0.85rem; cursor: pointer;">💾 确认创建</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Live log panel -->
   <div class="log-panel" id="log-panel">

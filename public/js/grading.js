@@ -2,6 +2,7 @@
 
 const API = '';
 const submissionId = Number(window.location.pathname.split('/').pop());
+const activeAssignment = localStorage.getItem('active_assignment') || 'midterm';
 let submission = null;
 let allSubmissions = [];
 let currentGrade = null; // The grade being edited (AI or final)
@@ -61,7 +62,7 @@ document.getElementById('pdf-zoom-out').addEventListener('click', () => {
 async function loadSubmission() {
   try {
     // Load all submissions for navigation
-    const allRes = await fetch(`${API}/api/submissions?assignment=midterm`);
+    const allRes = await fetch(`${API}/api/submissions?assignment=${activeAssignment}`);
     allSubmissions = await allRes.json();
 
     // Load this submission
@@ -277,7 +278,8 @@ function updateTotalScore() {
   if (!currentGrade || !currentGrade.questions) return;
   const total = currentGrade.questions.reduce((s, q) => s + q.awarded_score, 0);
   currentGrade.total_score = total;
-  document.getElementById('total-score').textContent = `${total} / 120`;
+  const maxScore = currentGrade.questions.reduce((s, q) => s + (q.max_score || 0), 0);
+  document.getElementById('total-score').textContent = `${total} / ${maxScore}`;
 }
 
 // ── Save & Finalize ──

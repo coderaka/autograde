@@ -3,10 +3,12 @@ let allSubmissions = [];
 let currentFilter = 'all';
 let sortField = 'student_id'; // default sort by student ID
 let sortOrder = 'asc';
+let activeAssignment = localStorage.getItem('active_assignment') || 'midterm';
 
 // ── Init ──
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   loadModel();
+  await loadAssignmentsDropdown();
   loadData();
   loadRosterStatus();
   setupEventListeners();
@@ -123,6 +125,229 @@ function setupEventListeners() {
       renderTable();
     });
   });
+
+  // Assignment Dropdown Switching
+  const asgSelect = document.getElementById('assignment-select');
+  if (asgSelect) {
+    asgSelect.addEventListener('change', (e) => {
+      activeAssignment = e.target.value;
+      localStorage.setItem('active_assignment', activeAssignment);
+      loadData();
+    });
+  }
+
+  // Create Assignment Modal
+  const newAsgModal = document.getElementById('modal-assignment');
+  const btnNewAsg = document.getElementById('btn-new-assignment');
+  if (btnNewAsg) {
+    btnNewAsg.addEventListener('click', () => {
+      document.getElementById('input-assignment-key').value = '';
+      document.getElementById('input-assignment-title').value = '';
+      document.getElementById('input-assignment-answers').value = '';
+      document.getElementById('input-assignment-rubric').value = '';
+      if (newAsgModal) newAsgModal.style.display = 'flex';
+    });
+  }
+
+  const btnCloseModal = document.getElementById('btn-close-assignment-modal');
+  if (btnCloseModal) {
+    btnCloseModal.addEventListener('click', () => {
+      if (newAsgModal) newAsgModal.style.display = 'none';
+    });
+  }
+
+  const btnCancelAsg = document.getElementById('btn-cancel-assignment');
+  if (btnCancelAsg) {
+    btnCancelAsg.addEventListener('click', () => {
+      if (newAsgModal) newAsgModal.style.display = 'none';
+    });
+  }
+
+  // AI Rubric Generation
+  const btnGenerateRubric = document.getElementById('btn-generate-rubric');
+  if (btnGenerateRubric) {
+    btnGenerateRubric.addEventListener('click', async () => {
+      const answersVal = document.getElementById('input-assignment-answers').value.trim();
+      const titleVal = document.getElementById('input-assignment-title').value.trim() || 
+                       document.getElementById('input-assignment-key').value.trim() || 
+                       '新作业';
+      
+      if (!answersVal) {
+        showToast('请先输入标准参考答案！', 'error');
+        return;
+      }
+      
+      btnGenerateRubric.disabled = true;
+      const originalText = btnGenerateRubric.textContent;
+      btnGenerateRubric.textContent = '⏳ 正在生成...';
+      
+      try {
+        const res = await fetch(`${API}/api/assignments/generate-rubric`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answers: answersVal, title: titleVal })
+        });
+        
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || '生成失败');
+        }
+        
+        const data = await res.json();
+        document.getElementById('input-assignment-rubric').value = JSON.stringify(data.rubric, null, 2);
+        showToast('🎉 Rubric 评分标准生成成功！', 'success');
+      } catch (err) {
+        showToast('生成 Rubric 失败: ' + err.message, 'error');
+      } finally {
+        btnGenerateRubric.disabled = false;
+        btnGenerateRubric.textContent = originalText;
+      }
+    });
+  }
+
+  // Submit New Assignment
+  const btnSubmitAsg = document.getElementById('btn-submit-assignment');
+  if (btnSubmitAsg) {
+    btnSubmitAsg.addEventListener('click', async () => {
+      const key = document.getElementById('input-assignment-key').value.trim();
+      const title = document.getElementById('input-assignment-title').value.trim();
+      const answers = document.getElementById('input-assignment-answers').value.trim();
+      const rubricText = document.getElementById('input-assignment-rubric').value.trim();
+      
+      if (!key || !title) {
+        showToast('请输入作业 Key 和显示标题！', 'error');
+        return;
+      }
+      
+      if (!/^[a-zA-Z0-9_-]+$/.test(key)) {
+        showToast('作业 Key 仅支持英文字母、数字、下划线和连字符！', 'error');
+        return;
+      }
+      
+      if (!rubricText) {
+        showToast('请输入或生成 Rubric 评分标准！', 'error');
+        return;
+      }
+      
+      let rubric = null;
+      try {
+        rubric = JSON.parse(rubricText);
+      } catch (err) {
+        showToast('评分标准 JSON 格式不合法，请检查！', 'error');
+        return;
+      }
+      
+      btnSubmitAsg.disabled = true;
+      showToast('正在创建作业...', 'info');
+      
+      try {
+        const res = await fetch(`${API}/api/assignments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key, title, rubric, answers })
+        });
+        
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || '创建失败');
+        }
+        
+        showToast('🎉 作业创建成功！', 'success');
+        if (newAsgModal) newAsgModal.style.display = 'none';
+        
+        // Set active and reload
+        activeAssignment = key;
+        localStorage.setItem('active_assignment', activeAssignment);
+        await loadAssignmentsDropdown();
+        loadData();
+      } catch (err) {
+        showToast('创建作业失败: ' + err.message, 'error');
+      } finally {
+        btnSubmitAsg.disabled = false;
+      }
+    });
+  }
+
+  // Backup Export
+  const btnExportBackup = document.getElementById('btn-export-backup');
+  if (btnExportBackup) {
+    btnExportBackup.addEventListener('click', () => {
+      window.open(`${API}/api/submissions/export-backup?assignment=${activeAssignment}`);
+    });
+  }
+
+  // Backup Import
+  const backupImportFile = document.getElementById('backup-import-file');
+  if (backupImportFile) {
+    backupImportFile.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const backupData = JSON.parse(event.target.result);
+          
+          if (backupData.assignment && backupData.assignment !== activeAssignment) {
+            if (!confirm(`备份文件中的作业为 [${backupData.assignment}]，而当前选中的作业为 [${activeAssignment}]。\n确认要强制导入并还原到当前作业中吗？`)) {
+              backupImportFile.value = '';
+              return;
+            }
+          }
+          
+          showToast('正在恢复备份数据，请稍候...', 'info');
+          const res = await fetch(`${API}/api/submissions/import-backup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ backupData })
+          });
+          
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || '恢复失败');
+          }
+          
+          const result = await res.json();
+          showToast(`🎉 备份数据恢复成功！还原了 ${result.restoredCount} 份答卷状态。`, 'success');
+          loadData();
+        } catch (err) {
+          showToast('恢复备份失败: ' + err.message, 'error');
+        }
+      };
+      reader.readAsText(file);
+      backupImportFile.value = '';
+    });
+  }
+}
+
+// ── Load Assignments Dropdown ──
+async function loadAssignmentsDropdown() {
+  try {
+    const res = await fetch(`${API}/api/assignments`);
+    if (!res.ok) throw new Error('Failed to load assignments');
+    const assignments = await res.json();
+    const select = document.getElementById('assignment-select');
+    if (!select) return;
+    select.innerHTML = '';
+    
+    assignments.forEach(asg => {
+      const opt = document.createElement('option');
+      opt.value = asg.key;
+      opt.textContent = `${asg.title} (${asg.key})`;
+      if (asg.key === activeAssignment) opt.selected = true;
+      select.appendChild(opt);
+    });
+    
+    // Fallback check if the current activeAssignment isn't in the list
+    const exists = assignments.some(asg => asg.key === activeAssignment);
+    if (!exists && assignments.length > 0) {
+      activeAssignment = assignments[0].key;
+      localStorage.setItem('active_assignment', activeAssignment);
+      select.value = activeAssignment;
+    }
+  } catch (err) {
+    console.error('Failed to load assignments:', err);
+  }
 }
 
 // ── Upload PDFs ──
@@ -133,7 +358,7 @@ async function uploadPdfs(files) {
   for (const f of files) {
     formData.append('pdfs', f);
   }
-  formData.append('assignment', 'midterm');
+  formData.append('assignment', activeAssignment);
 
   try {
     const res = await fetch(`${API}/api/upload-pdfs`, { method: 'POST', body: formData });
@@ -192,8 +417,8 @@ async function loadRosterStatus() {
 async function loadData() {
   try {
     const [subsRes, statsRes] = await Promise.all([
-      fetch(`${API}/api/submissions?assignment=midterm`),
-      fetch(`${API}/api/stats?assignment=midterm`),
+      fetch(`${API}/api/submissions?assignment=${activeAssignment}`),
+      fetch(`${API}/api/stats?assignment=${activeAssignment}`),
     ]);
     allSubmissions = await subsRes.json();
     const stats = await statsRes.json();
@@ -358,7 +583,7 @@ async function scanSubmissions() {
     const res = await fetch(`${API}/api/scan-submissions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assignment: 'midterm' }),
+      body: JSON.stringify({ assignment: activeAssignment }),
     });
     const data = await res.json();
     showToast(`扫描完成：发现 ${data.total} 个 PDF，新导入 ${data.imported} 个`, 'success');
@@ -374,7 +599,7 @@ async function syncRoster() {
     const res = await fetch(`${API}/api/sync-roster`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assignment: 'midterm' }),
+      body: JSON.stringify({ assignment: activeAssignment }),
     });
     const data = await res.json();
     if (res.ok) {
@@ -404,7 +629,7 @@ async function batchGrade() {
     await fetch(`${API}/api/submissions/batch-grade`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assignment: 'midterm' }),
+      body: JSON.stringify({ assignment: activeAssignment }),
     });
     showToast('批量批改已启动，自动刷新中...', 'success');
     // Poll for updates
@@ -486,7 +711,7 @@ window.editIdentity = function(id, currentSid, currentName) {
 };
 
 function exportGrades() {
-  window.open(`${API}/api/export?assignment=midterm`);
+  window.open(`${API}/api/export?assignment=${activeAssignment}`);
 }
 
 // ── Toast ──
