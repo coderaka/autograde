@@ -1,6 +1,8 @@
 const API = '';
 let allSubmissions = [];
 let currentFilter = 'all';
+let sortField = 'student_id'; // default sort by student ID
+let sortOrder = 'asc';
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
@@ -106,6 +108,20 @@ function setupEventListeners() {
       return;
     }
     await uploadPdfs(files);
+  });
+
+  // Table header sorting
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const field = th.dataset.sort;
+      if (sortField === field) {
+        sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+      } else {
+        sortField = field;
+        sortOrder = 'asc';
+      }
+      renderTable();
+    });
   });
 }
 
@@ -221,10 +237,77 @@ function renderTable() {
     ? allSubmissions
     : allSubmissions.filter(s => s.status === currentFilter);
 
+  // Apply sorting
+  let sorted = [...filtered];
+  if (sortField) {
+    sorted.sort((a, b) => {
+      let valA = '';
+      let valB = '';
+
+      if (sortField === 'index') {
+        valA = a.id;
+        valB = b.id;
+      } else if (sortField === 'student_id') {
+        valA = a.student_id || '';
+        valB = b.student_id || '';
+      } else if (sortField === 'student_name') {
+        valA = a.student_name || '';
+        valB = b.student_name || '';
+      } else if (sortField === 'status') {
+        valA = a.status || '';
+        valB = b.status || '';
+      } else if (sortField === 'ai_score') {
+        const scoreA = a.ai_grade_json ? JSON.parse(a.ai_grade_json).total_score : -1;
+        const scoreB = b.ai_grade_json ? JSON.parse(b.ai_grade_json).total_score : -1;
+        return sortOrder === 'asc' ? scoreA - scoreB : scoreB - scoreA;
+      } else if (sortField === 'final_score') {
+        const scoreA = a.total_score ?? -1;
+        const scoreB = b.total_score ?? -1;
+        return sortOrder === 'asc' ? scoreA - scoreB : scoreB - scoreA;
+      } else if (sortField === 'graded_by') {
+        valA = a.graded_by || '';
+        valB = b.graded_by || '';
+      }
+
+      // Chinese Pinyin sorting
+      if (sortField === 'student_name') {
+        return sortOrder === 'asc'
+          ? valA.localeCompare(valB, 'zh')
+          : valB.localeCompare(valA, 'zh');
+      }
+
+      if (valA === valB) return 0;
+
+      if (typeof valA === 'string' && typeof valB === 'string') {
+        return sortOrder === 'asc'
+          ? valA.localeCompare(valB)
+          : valB.localeCompare(valA);
+      } else {
+        return sortOrder === 'asc'
+          ? (valA > valB ? 1 : -1)
+          : (valB > valA ? 1 : -1);
+      }
+    });
+  }
+
+  // Update header sort icons in real-time
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    const field = th.dataset.sort;
+    const iconSpan = th.querySelector('.sort-icon');
+    if (iconSpan) {
+      if (field === sortField) {
+        iconSpan.textContent = sortOrder === 'asc' ? ' ▲' : ' ▼';
+        iconSpan.style.color = 'var(--accent)';
+      } else {
+        iconSpan.textContent = '';
+      }
+    }
+  });
+
   const tbody = document.getElementById('submissions-body');
   const empty = document.getElementById('empty-state');
 
-  if (filtered.length === 0) {
+  if (sorted.length === 0) {
     tbody.innerHTML = '';
     empty.style.display = allSubmissions.length === 0 ? 'block' : 'block';
     return;
@@ -232,7 +315,7 @@ function renderTable() {
 
   empty.style.display = 'none';
 
-  tbody.innerHTML = filtered.map((sub, i) => {
+  tbody.innerHTML = sorted.map((sub, i) => {
     const aiScore = sub.ai_grade_json ? JSON.parse(sub.ai_grade_json).total_score : '—';
     const finalScore = sub.total_score ?? '—';
     const statusLabel = {
@@ -257,8 +340,8 @@ function renderTable() {
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="btn btn-sm" style="opacity:0.6" onclick="editIdentity(${sub.id},'${(sub.student_id||'').replace(/'/g,"\\'")}','${(sub.student_name||'').replace(/'/g,"\\'")}')">✏️</button>
           ${sub.status === 'pending' || sub.status === 'error'
-            ? `<button class="btn btn-sm btn-primary" onclick="aiGrade(${sub.id})">🤖 AI 批改</button>`
-            : `<button class="btn btn-sm btn-secondary" onclick="aiGrade(${sub.id})">🔄 重评</button>`}
+            ? `<button class="btn btn-sm btn-primary" onclick="aiGrade(${sub.id}, this)">🤖 AI 批改</button>`
+            : `<button class="btn btn-sm btn-secondary" onclick="aiGrade(${sub.id}, this)">🔄 重评</button>`}
           ${sub.status !== 'pending'
             ? `<a href="/grade/${sub.id}" class="btn btn-sm btn-secondary">📝 查看</a>`
             : ''}
@@ -340,7 +423,22 @@ async function batchGrade() {
   }
 }
 
-window.aiGrade = async function(id) {
+window.aiGrade = async function(id, btn) {
+  const sub = allSubmissions.find(s => s.id === id);
+  if (sub && sub.status !== 'pending' && sub.status !== 'error') {
+    const label = sub.student_name || sub.student_id || '未命名学生';
+    if (!confirm(`确认要重新批改 [${label}] 的整份卷子吗？\n警告：这将会覆盖当前已有的评分和修改理由！`)) {
+      return;
+    }
+  }
+
+  let originalHtml = '';
+  if (btn) {
+    btn.disabled = true;
+    originalHtml = btn.innerHTML;
+    btn.innerHTML = `<span class="spinner-sm" style="margin-right:4px; vertical-align:middle;"></span>⏳ 批改中...`;
+  }
+
   showToast('正在 AI 批改...', 'info');
   try {
     const res = await fetch(`${API}/api/submissions/${id}/ai-grade`, { method: 'POST' });
@@ -353,6 +451,10 @@ window.aiGrade = async function(id) {
     loadData();
   } catch (err) {
     showToast('AI 批改失败: ' + err.message, 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
     loadData();
   }
 };

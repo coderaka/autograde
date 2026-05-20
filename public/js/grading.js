@@ -47,12 +47,12 @@ document.getElementById('pdf-next').addEventListener('click', () => {
 });
 document.getElementById('pdf-zoom-in').addEventListener('click', () => {
   scale = Math.min(scale + 0.2, 3.0);
-  document.getElementById('pdf-zoom-level').textContent = Math.round(scale * 100 / 1.2 * 100) + '%';
+  document.getElementById('pdf-zoom-level').textContent = Math.round((scale / 1.2) * 100) + '%';
   renderPage(pageNum);
 });
 document.getElementById('pdf-zoom-out').addEventListener('click', () => {
   scale = Math.max(scale - 0.2, 0.4);
-  document.getElementById('pdf-zoom-level').textContent = Math.round(scale * 100 / 1.2 * 100) + '%';
+  document.getElementById('pdf-zoom-level').textContent = Math.round((scale / 1.2) * 100) + '%';
   renderPage(pageNum);
 });
 
@@ -112,6 +112,52 @@ function setupNav(idx) {
 
 // ── Render Score Panel ──
 
+function autoResizeTextarea(textarea) {
+  textarea.style.height = 'auto';
+  textarea.style.height = textarea.scrollHeight + 'px';
+}
+
+async function regradeQuestion(qid) {
+  const modelSelect = document.getElementById('regrade-model-select');
+  const model = modelSelect ? modelSelect.value : null;
+
+  // Find the button and row in UI
+  const row = document.querySelector(`.score-item[data-qid="${qid}"]`);
+  const btn = row?.querySelector('.btn-regrade-question');
+  if (!btn) return;
+
+  btn.disabled = true;
+  const originalHtml = btn.innerHTML;
+  btn.innerHTML = '<div class="spinner-sm"></div>';
+
+  try {
+    const res = await fetch(`${API}/api/submissions/${submissionId}/ai-grade-question`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ questionId: qid, model }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || '重评失败');
+    }
+
+    const data = await res.json();
+    showToast(`第 ${qid} 题重评完成！`, 'success');
+
+    // Update state and refresh panel
+    currentGrade = data.grade;
+    renderScorePanel();
+  } catch (err) {
+    showToast(`重评失败: ${err.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
+  }
+}
+
 function renderScorePanel() {
   const container = document.getElementById('score-items');
 
@@ -153,11 +199,13 @@ function renderScorePanel() {
           <input type="number" class="score-input" value="${q.awarded_score}"
                  min="0" max="${q.max_score}" data-qid="${q.question_id}" data-max="${q.max_score}">
           <span class="max-score">/ ${q.max_score}</span>
-          <span class="status-icon" title="${q.reasoning || ''}">${statusIcon}</span>
+          <div class="score-item-actions" style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
+            <button class="btn-regrade-question" data-qid="${q.question_id}" title="AI 重新批改此小题">🔄</button>
+            <span class="status-icon" title="${q.reasoning || ''}">${statusIcon}</span>
+          </div>
         </div>
-        ${q.error_description && !q.is_correct ? `<div class="score-item-details" style="color:var(--red);">⚠ ${q.error_description}</div>` : ''}
-        ${q.needs_review && q.reasoning ? `<div class="score-item-details" style="color:var(--yellow);">💡 ${q.reasoning}</div>` : ''}
-        ${q.reasoning && !q.needs_review ? `<div class="score-item-details">${q.reasoning}</div>` : ''}`;
+        ${q.error_description && !q.is_correct ? `<div class="score-item-details" style="color:var(--red); padding-bottom: 2px;">⚠ ${q.error_description}</div>` : ''}
+        <textarea class="reason-textarea" data-qid="${q.question_id}" placeholder="输入评分理由...">${q.reasoning || ''}</textarea>`;
     }
     html += '</div>';
   }
@@ -181,7 +229,46 @@ function renderScorePanel() {
         q.awarded_score = val;
         q.is_correct = val === q.max_score;
       }
+      
+      // Update UI in real-time
+      const row = container.querySelector(`.score-item[data-qid="${qid}"]`);
+      if (row) {
+        const statusIconSpan = row.querySelector('.status-icon');
+        const statusIcon = q.needs_review ? '⚠️' : (q.is_correct ? '✅' : '❌');
+        if (statusIconSpan) statusIconSpan.textContent = statusIcon;
+        
+        if (q.needs_review) {
+          row.classList.add('needs-review');
+        } else {
+          row.classList.remove('needs-review');
+        }
+      }
+      
       updateTotalScore();
+    });
+  });
+
+  // Listen for reason changes with auto-resizing textareas
+  container.querySelectorAll('.reason-textarea').forEach(textarea => {
+    // Initial auto-resize
+    autoResizeTextarea(textarea);
+
+    textarea.addEventListener('input', () => {
+      autoResizeTextarea(textarea);
+      const qid = textarea.dataset.qid;
+      const q = currentGrade.questions.find(q => q.question_id === qid);
+      if (q) {
+        q.reasoning = textarea.value;
+      }
+    });
+  });
+
+  // Listen for per-question regrade clicks
+  container.querySelectorAll('.btn-regrade-question').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const qid = btn.dataset.qid;
+      regradeQuestion(qid);
     });
   });
 }
@@ -395,6 +482,86 @@ document.getElementById('regrade-model-select').addEventListener('change', async
   }
 });
 
+// ── Drag-to-scroll (Grab-to-pan) for PDF Canvas ──
+function setupDragToScroll() {
+  const wrapper = document.getElementById('pdf-canvas-wrapper');
+  if (!wrapper) return;
+
+  let isDown = false;
+  let startX;
+  let startY;
+  let scrollLeft;
+  let scrollTop;
+
+  wrapper.addEventListener('mousedown', (e) => {
+    // Only trigger drag on left-click
+    if (e.button !== 0) return;
+    isDown = true;
+    wrapper.classList.add('grabbing');
+    startX = e.pageX - wrapper.offsetLeft;
+    startY = e.pageY - wrapper.offsetTop;
+    scrollLeft = wrapper.scrollLeft;
+    scrollTop = wrapper.scrollTop;
+  });
+
+  wrapper.addEventListener('mouseleave', () => {
+    isDown = false;
+    wrapper.classList.remove('grabbing');
+  });
+
+  wrapper.addEventListener('mouseup', () => {
+    isDown = false;
+    wrapper.classList.remove('grabbing');
+  });
+
+  wrapper.addEventListener('mousemove', (e) => {
+    if (!isDown) return;
+    e.preventDefault();
+    const x = e.pageX - wrapper.offsetLeft;
+    const y = e.pageY - wrapper.offsetTop;
+    const walkX = (x - startX) * 1.5; // Scroll speed multiplier
+    const walkY = (y - startY) * 1.5;
+    wrapper.scrollLeft = scrollLeft - walkX;
+    wrapper.scrollTop = scrollTop - walkY;
+  });
+}
+
+// ── Collapsible Chat Sidebar ──
+function setupChatToggle() {
+  const toggleBtn = document.getElementById('btn-toggle-chat');
+  const layout = document.querySelector('.grading-layout');
+  if (!toggleBtn || !layout) return;
+
+  // Read initial preference from localStorage
+  const isCollapsed = localStorage.getItem('chatCollapsed') === 'true';
+  if (isCollapsed) {
+    layout.classList.add('chat-collapsed');
+    toggleBtn.textContent = '💬 显示聊天';
+    toggleBtn.classList.remove('btn-primary');
+    toggleBtn.classList.add('btn-secondary');
+  } else {
+    toggleBtn.textContent = '💬 隐藏聊天';
+    toggleBtn.classList.remove('btn-secondary');
+    toggleBtn.classList.add('btn-primary'); // Highlight when open
+  }
+
+  toggleBtn.addEventListener('click', () => {
+    const collapsed = layout.classList.toggle('chat-collapsed');
+    localStorage.setItem('chatCollapsed', collapsed);
+    if (collapsed) {
+      toggleBtn.textContent = '💬 显示聊天';
+      toggleBtn.classList.remove('btn-primary');
+      toggleBtn.classList.add('btn-secondary');
+    } else {
+      toggleBtn.textContent = '💬 隐藏聊天';
+      toggleBtn.classList.remove('btn-secondary');
+      toggleBtn.classList.add('btn-primary');
+    }
+  });
+}
+
 // ── Init ──
 loadModelConfig();
 loadSubmission();
+setupDragToScroll();
+setupChatToggle();

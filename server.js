@@ -7,7 +7,7 @@ import multer from 'multer';
 import XLSX from 'xlsx';
 import * as db from './lib/db.js';
 import { initDb } from './lib/db.js';
-import { gradeSubmission, buildChatSystemPrompt, loadRubric } from './lib/grading-engine.js';
+import { gradeSubmission, buildChatSystemPrompt, loadRubric, gradeSingleQuestion } from './lib/grading-engine.js';
 import { chatAboutSubmission, MODELS, getCurrentModel, setCurrentModel } from './lib/gemini.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -174,12 +174,24 @@ function reconcileStudentIdentity(submissionId, aiResult, force = false) {
     const canonicalId = rosterStudent.id;
     const canonicalName = rosterStudent.name;
 
-    // Rename PDF to standard format: 学号_姓名.pdf
+    // Rename PDF to standard format: 学号_姓名.pdf (or 学号_姓名_vN.pdf if duplicates exist)
     const oldPdfPath = resolve(join(__dirname, 'submissions', sub.pdf_path));
     const dir = dirname(oldPdfPath);
-    const newFilename = `${canonicalId}_${canonicalName}.pdf`;
-    const newPdfPath = join(dir, newFilename);
-    const newRelPath = join(dirname(sub.pdf_path), newFilename);
+    
+    let newFilename = `${canonicalId}_${canonicalName}.pdf`;
+    let newPdfPath = join(dir, newFilename);
+    let newRelPath = join(dirname(sub.pdf_path), newFilename);
+
+    // If the file is not already correctly named and the target standard path already exists, find a unique version suffix
+    if (oldPdfPath !== newPdfPath && existsSync(newPdfPath)) {
+      let counter = 2;
+      while (existsSync(join(dir, `${canonicalId}_${canonicalName}_v${counter}.pdf`))) {
+        counter++;
+      }
+      newFilename = `${canonicalId}_${canonicalName}_v${counter}.pdf`;
+      newPdfPath = join(dir, newFilename);
+      newRelPath = join(dirname(sub.pdf_path), newFilename);
+    }
 
     let renamed = false;
     if (oldPdfPath !== newPdfPath && !existsSync(newPdfPath)) {
@@ -192,7 +204,7 @@ function reconcileStudentIdentity(submissionId, aiResult, force = false) {
       }
     }
 
-    // If successfully renamed or the target standard file already exists, update both student_id and pdf_path
+    // If successfully renamed or the target file already exists, update both student_id and pdf_path
     if (renamed || existsSync(newPdfPath)) {
       db.updateSubmissionStudent(submissionId, canonicalId, newRelPath);
     } else {
@@ -303,6 +315,131 @@ app.post('/api/submissions/:id/ai-grade', async (req, res) => {
     db.updateSubmissionStatus(sub.id, 'error');
     broadcast({ type: 'grading_error', id: sub.id, label, error: err.message, time: new Date().toLocaleTimeString('zh-CN') });
     console.error('AI grading error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── AI Single Question Grading ──
+app.post('/api/submissions/:id/ai-grade-question', async (req, res) => {
+  const sub = db.getSubmission(Number(req.params.id));
+  if (!sub) return res.status(404).json({ error: 'Not found' });
+
+  const pdfPath = resolve(join(__dirname, 'submissions', sub.pdf_path));
+  if (!existsSync(pdfPath)) return res.status(404).json({ error: 'PDF not found' });
+
+  const { questionId, model } = req.body;
+  if (!questionId) return res.status(400).json({ error: 'Missing questionId' });
+
+  const modelName = model || getCurrentModel();
+  const label = sub.student_name || sub.student_id || basename(sub.pdf_path);
+
+  try {
+    // Determine the active grade JSON structure
+    let grade = null;
+    if (sub.final_grade_json) {
+      grade = JSON.parse(sub.final_grade_json);
+    } else if (sub.ai_grade_json) {
+      grade = JSON.parse(sub.ai_grade_json);
+    }
+
+    // Fall back to rubric-based empty skeleton if no grading exists
+    if (!grade) {
+      const rubric = loadRubric(sub.assignment);
+      const questions = [];
+      for (const q of rubric.questions || []) {
+        for (const sq of q.sub_questions || []) {
+          questions.push({
+            question_id: sq.id,
+            max_score: sq.max_score,
+            awarded_score: 0,
+            is_correct: false,
+            error_description: '',
+            reasoning: '尚未评分',
+            needs_review: false
+          });
+        }
+      }
+      grade = {
+        student_id: sub.student_id || 'unknown',
+        student_name: sub.student_name || 'unknown',
+        questions,
+        total_score: 0,
+        overall_comment: '初始评分'
+      };
+    }
+
+    // Normalize grade questions just to be extra safe
+    grade = normalizeGrade(grade);
+
+    // Broadcast SSE start
+    broadcast({
+      type: 'grading_start',
+      id: sub.id,
+      label: `${label} (第 ${questionId} 题)`,
+      model: modelName,
+      time: new Date().toLocaleTimeString('zh-CN')
+    });
+
+    const onRetry = (attempt, max, reason) => {
+      broadcast({
+        type: 'retry',
+        id: sub.id,
+        label: `${label} (第 ${questionId} 题)`,
+        attempt,
+        max,
+        reason,
+        time: new Date().toLocaleTimeString('zh-CN')
+      });
+    };
+
+    // Call grading engine for the single question
+    const result = await gradeSingleQuestion(pdfPath, questionId, sub.assignment, modelName, { onRetry });
+
+    // Locate and merge the new single-question result
+    const qIdx = grade.questions.findIndex(q => q.question_id === questionId);
+    if (qIdx !== -1) {
+      grade.questions[qIdx] = {
+        ...grade.questions[qIdx],
+        ...result
+      };
+    } else {
+      grade.questions.push(result);
+    }
+
+    // Recalculate total_score
+    const calculatedTotal = grade.questions.reduce((sum, q) => sum + q.awarded_score, 0);
+    grade.total_score = calculatedTotal;
+
+    // Persist changes back to database based on status
+    if (sub.final_grade_json) {
+      db.updateFinalGrade(sub.id, grade, sub.graded_by || 'TA');
+    } else {
+      db.updateAiGrade(sub.id, grade);
+    }
+
+    const updatedSub = db.getSubmission(sub.id);
+    const finalLabel = updatedSub.student_name || updatedSub.student_id || label;
+
+    // Broadcast SSE done
+    broadcast({
+      type: 'grading_done',
+      id: sub.id,
+      label: `${finalLabel} (第 ${questionId} 题)`,
+      score: grade.total_score,
+      model: modelName,
+      time: new Date().toLocaleTimeString('zh-CN')
+    });
+
+    res.json({ success: true, grade, model: modelName });
+  } catch (err) {
+    broadcast({
+      type: 'grading_error',
+      id: sub.id,
+      label: `${label} (第 ${questionId} 题)`,
+      error: err.message,
+      time: new Date().toLocaleTimeString('zh-CN')
+    });
+    console.error(`AI single-question grading error:`, err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -498,9 +635,20 @@ app.post('/api/sync-roster', (req, res) => {
           if (rosterStudent) {
             const oldPdfPath = resolve(join(__dirname, 'submissions', sub.pdf_path));
             const dir = dirname(oldPdfPath);
-            const newFilename = `${rosterStudent.id}_${rosterStudent.name}.pdf`;
-            const newPdfPath = join(dir, newFilename);
-            const newRelPath = join(dirname(sub.pdf_path), newFilename);
+            let newFilename = `${rosterStudent.id}_${rosterStudent.name}.pdf`;
+            let newPdfPath = join(dir, newFilename);
+            let newRelPath = join(dirname(sub.pdf_path), newFilename);
+
+            // If the file is not already correctly named and the target standard path already exists, find a unique version suffix
+            if (oldPdfPath !== newPdfPath && existsSync(newPdfPath)) {
+              let counter = 2;
+              while (existsSync(join(dir, `${rosterStudent.id}_${rosterStudent.name}_v${counter}.pdf`))) {
+                counter++;
+              }
+              newFilename = `${rosterStudent.id}_${rosterStudent.name}_v${counter}.pdf`;
+              newPdfPath = join(dir, newFilename);
+              newRelPath = join(dirname(sub.pdf_path), newFilename);
+            }
 
             let renamed = false;
             if (oldPdfPath !== newPdfPath && !existsSync(newPdfPath)) {
