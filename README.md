@@ -62,55 +62,13 @@ npm run dev
 ### 2. 如何导入与准备花名册
 学生花名册存储于 SQLite 的 `students` 表，表结构包含：`id` (学号/主键)、`name` (姓名)、`email` (邮箱/可选)。
 
-你可以采用以下三种方案来准备并导入您的班级花名册：
-
-#### 方案 A：在前端 UI 界面直接上传 Excel 文件 (强烈推荐 🌟)
-这是最简单、直观且最推荐的方案：
+系统提供极简、直观的一键式导入方案：
 1. **准备 Excel 文件**：新建一个 Excel 表格，确保其中包含两列关键信息，表头名称可以是：
    - **学号列**：支持 `学号`、`Student ID`、`id` 中的任意一种。
    - **姓名列**：支持 `姓名`、`Name`、`name` 中的任意一种。
    - **邮箱列 (可选)**：支持 `邮箱`、`Email`、`email` 中的任意一种。
 2. **在 UI 上传**：打开 AutoGrade 首页，在左上角的 **“学生花名册”** 面板上，点击 **“📋 导入花名册”** 按钮，选择准备好的 Excel 文件。
 3. 系统将秒级完成解析、排重并同步至本地数据库，首页看板会立即实时刷新展示导入的学生总数！
-
-#### 方案 B：编写 Node.js 脚本批量导入 Excel 列表 (适合离线或二次开发)
-如果您需要编写自动化任务或离线管理，可在项目中使用类似 `scratch/sync_emails.js` 的脚本进行导入。
-1. 在项目目录中安装 `xlsx` 依赖：
-   ```bash
-   npm install xlsx
-   ```
-2. 编写并运行一个简单的 Node.js 导入脚本：
-   ```javascript
-   import { initDb, upsertStudent } from './lib/db.js';
-   import XLSX from 'xlsx';
-
-   async function main() {
-     await initDb();
-     const wb = XLSX.readFile('/path/to/your/roster.xlsx'); // 读取你的花名册文件
-     const sheet = wb.Sheets[wb.SheetNames[0]];
-     const excelRows = XLSX.utils.sheet_to_json(sheet);
-     
-     for (const r of excelRows) {
-       const id = String(r['学号'] || r['Student ID']).trim();
-       const name = String(r['姓名'] || r['Name']).trim();
-       const email = String(r['邮箱'] || r['Email'] || '').trim();
-       if (id && name) {
-         upsertStudent(id, name, email || null);
-       }
-     }
-     console.log('Class roster seeded successfully!');
-   }
-   main().catch(console.error);
-   ```
-
-#### 方案 C：使用 SQL 脚本直接批量插入
-如果你习惯使用数据库管理工具（如 DBeaver、DB Browser for SQLite），可以直接对项目中的 `db/autograde.db` 执行 SQL 语句向 `students` 表批量插入记录：
-```sql
-INSERT INTO students (id, name, email) VALUES 
-('522030910167', '秦汉', 'qinhan@example.edu'),
-('521030910396', '何明鸿', 'heminghong@example.edu'),
-('524030910196', '刘羽馨', 'liuyuxin@example.edu');
-```
 
 ---
 
