@@ -52,6 +52,60 @@ Open your browser and navigate to: [http://localhost:3000](http://localhost:3000
 
 ---
 
+## 📋 Student Roster Guide
+
+### 1. Purpose of the Student Roster
+In the AutoGrade system, the official class roster (Roster) is stored inside the SQLite database's `students` table, serving critical safety and analytical roles:
+- **Precise Identity Mapping**: When the system scans physical PDF exam papers or runs AI grading, it automatically extracts hand-written student IDs and names, matching them against the roster (supporting Pinyin similarity and AI typo tolerance) to accurately link submissions to registered students.
+- **Anti-Data Contamination**: If an imported PDF scan contains typos or extremely messy handwriting that cannot be identified, the system dynamically registers it with `student_id = NULL` (unlinked). It **never** inserts garbage rows into the main `students` roster, keeping your student database pristine and isolated.
+- **Class-wide Submission Tracking**: Seeding the database with a complete roster allows the system to identify exactly who has missed the test ("Missing Submissions"), calculate submit rates, and construct precise average scores and distributions on the main Dashboard.
+
+### 2. Preparing and Seeding the Roster
+The roster resides in SQLite's `students` table. The schema contains three columns: `id` (Student ID / Primary Key), `name` (Student Name), and `email` (Email / Optional).
+
+You can prepare and seed your class list database using either of the following approaches:
+
+#### Approach A: Seeding from an Excel Class List via Node.js (Highly Recommended)
+This is the most common and automated workflow. Export your roster Excel spreadsheet (containing Student ID, Name, and optional Email columns) and run a quick importer script like `scratch/sync_emails.js`.
+1. Install `xlsx` package in the project directory:
+   ```bash
+   npm install xlsx
+   ```
+2. Write and execute a simple Node.js import script:
+   ```javascript
+   import { initDb, upsertStudent } from './lib/db.js';
+   import XLSX from 'xlsx';
+
+   async function main() {
+     await initDb();
+     const wb = XLSX.readFile('/path/to/your/roster.xlsx'); // Path to your roster file
+     const sheet = wb.Sheets[wb.SheetNames[0]];
+     const excelRows = XLSX.utils.sheet_to_json(sheet);
+     
+     for (const r of excelRows) {
+       const id = String(r['学号'] || r['Student ID'] || r['id']).trim();
+       const name = String(r['姓名'] || r['Name'] || r['name']).trim();
+       const email = String(r['邮箱'] || r['Email'] || '').trim();
+       if (id && name) {
+         upsertStudent(id, name, email || null);
+       }
+     }
+     console.log('Class roster seeded successfully!');
+   }
+   main().catch(console.error);
+   ```
+
+#### Approach B: Direct Batch SQL Insertions
+If you are comfortable using direct database clients (e.g. DBeaver, DB Browser for SQLite), you can connect to `db/autograde.db` and execute standard SQL inserts:
+```sql
+INSERT INTO students (id, name, email) VALUES 
+('522030910167', 'Qin Han', 'qinhan@example.edu'),
+('521030910396', 'He Minghong', 'heminghong@example.edu'),
+('524030910196', 'Liu Yuxin', 'liuyuxin@example.edu');
+```
+
+---
+
 ## 🔧 New Assignment Guide
 
 The system supports two convenient workflows for creating new assignments:

@@ -51,6 +51,60 @@ npm run dev
 
 ---
 
+## 📋 学生花名册指南 (Student Roster Guide)
+
+### 1. 花名册的作用
+在 AutoGrade 系统中，官方学生花名册（Roster）常驻于 SQLite 数据库的 `students` 表中，起到核心的安全与数据分析作用：
+- **身份精准映射 (Identity Matching)**：当系统扫描物理 PDF 答卷或执行 AI 阅卷时，会自动提取答卷上的学号和姓名，并与花名册进行智能比对（支持拼音相似度及 AI 容错纠错），从而将答卷精准关联到特定学生。
+- **防脏数据污染 (Anti-Data Contamination)**：如果导入的试卷包含拼写错误或手写极度潦草、无法识别的个人信息，系统会自动将其标记为 `student_id = NULL`（未关联），而**绝对不会**在主花名册中新建垃圾记录，确保学生名单干净纯洁。
+- **全班维度统计 (Class-wide Stats)**：建立完整花名册后，系统能够精准识别“哪些学生未交作业”（Missing Submissions）、计算交卷率，并在成绩汇总看板（Dashboard）上输出精确的班级分数分布和平均分。
+
+### 2. 如何导入与准备花名册
+学生花名册存储于 SQLite 的 `students` 表，表结构包含：`id` (学号/主键)、`name` (姓名)、`email` (邮箱/可选)。
+
+你可以采用以下两种方案来准备并导入您的班级花名册：
+
+#### 方案 A：编写简单的 Node.js 脚本导入 Excel 列表 (强烈推荐)
+这是最常用且自动化的方案。你可以将班级的 Excel 电子表格（包含学号、姓名、邮箱等列）导出，并在项目中使用类似 `scratch/sync_emails.js` 的脚本进行导入。
+1. 在项目目录中安装 `xlsx` 依赖：
+   ```bash
+   npm install xlsx
+   ```
+2. 编写并运行一个简单的 Node.js 导入脚本：
+   ```javascript
+   import { initDb, upsertStudent } from './lib/db.js';
+   import XLSX from 'xlsx';
+
+   async function main() {
+     await initDb();
+     const wb = XLSX.readFile('/path/to/your/roster.xlsx'); // 读取你的花名册文件
+     const sheet = wb.Sheets[wb.SheetNames[0]];
+     const excelRows = XLSX.utils.sheet_to_json(sheet);
+     
+     for (const r of excelRows) {
+       const id = String(r['学号'] || r['Student ID']).trim();
+       const name = String(r['姓名'] || r['Name']).trim();
+       const email = String(r['邮箱'] || r['Email'] || '').trim();
+       if (id && name) {
+         upsertStudent(id, name, email || null);
+       }
+     }
+     console.log('Class roster seeded successfully!');
+   }
+   main().catch(console.error);
+   ```
+
+#### 方案 B：使用 SQL 脚本直接批量插入
+如果你习惯使用数据库管理工具（如 DBeaver、DB Browser for SQLite），可以直接对项目中的 `db/autograde.db` 执行 SQL 语句向 `students` 表批量插入记录：
+```sql
+INSERT INTO students (id, name, email) VALUES 
+('522030910167', '秦汉', 'qinhan@example.edu'),
+('521030910396', '何明鸿', 'heminghong@example.edu'),
+('524030910196', '刘羽馨', 'liuyuxin@example.edu');
+```
+
+---
+
 ## 🔧 新建作业指南 (How to New Assignment)
 
 为了提供极高的自由度，系统同时支持 **界面快速创建** 和 **物理磁盘管理** 两种方案：
