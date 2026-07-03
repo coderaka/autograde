@@ -217,9 +217,10 @@
       </div>
     </div>
     <div class="header-actions">
-      <div class="model-selector">
-        <label>模型</label>
-        <select id="model-select"></select>
+      <div class="model-selector" title="整卷默认使用 Gemini 3.5 Flash + AGY Gemini 3.1 Pro High 并行初评，再由 Codex GPT-5.5 xhigh 仲裁">
+        <label>批改流程</label>
+        <span style="font-size:0.82rem;color:var(--text-secondary);white-space:nowrap;">三模型仲裁</span>
+        <select id="model-select" style="display:none;"></select>
       </div>
     </div>
   </header>
@@ -287,7 +288,7 @@
           <input type="file" id="pdf-upload" accept=".pdf" multiple style="display:none;">
         </label>
         <button class="btn btn-secondary" id="btn-scan" title="扫描 submissions 目录">📂 扫描文件</button>
-        <button class="btn btn-primary" id="btn-batch-grade" title="批量 AI 批改所有待处理卷子">🤖 批量 AI 批改</button>
+        <button class="btn btn-primary" id="btn-batch-grade" title="批量使用三模型仲裁流程批改所有待处理卷子">🧭 批量仲裁批改</button>
         <button class="btn btn-secondary" id="btn-export" title="导出 Excel">📊 导出成绩</button>
         <button class="btn btn-secondary" id="btn-export-backup" title="导出无损 JSON 备份（含完整评分与 AI 聊天记录）">📤 备份数据</button>
         <label class="btn btn-secondary" title="导入无损 JSON 备份并完全还原" style="cursor:pointer;">

@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { join, dirname, resolve, basename, extname } from 'path';
+import { join, dirname, resolve, basename, extname, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { readdirSync, existsSync, renameSync, mkdirSync, copyFileSync, unlinkSync, readFileSync, writeFileSync } from 'fs';
 import multer from 'multer';
@@ -8,11 +8,22 @@ import XLSX from 'xlsx';
 import * as db from './lib/db.js';
 import { initDb } from './lib/db.js';
 import { gradeSubmission, buildChatSystemPrompt, loadRubric, gradeSingleQuestion } from './lib/grading-engine.js';
+import { gradeSubmissionWithCli, gradeSingleQuestionWithCli, isCliGradingModel } from './lib/cli-grading-engine.js';
+import { gradeSubmissionWithPanel, PANEL_WORKFLOW } from './lib/panel-grading-engine.js';
 import { chatAboutSubmission, MODELS, getCurrentModel, setCurrentModel, generateRubricFromAnswers } from './lib/gemini.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+function resolveSubmissionPdfPath(relPath) {
+  const submissionsRoot = resolve(join(__dirname, 'submissions'));
+  const fullPath = resolve(join(submissionsRoot, relPath));
+  if (fullPath !== submissionsRoot && !fullPath.startsWith(submissionsRoot + sep)) {
+    throw new Error('Invalid submission path');
+  }
+  return fullPath;
+}
 
 // Middleware
 app.use(express.json({ limit: '10mb' }));
@@ -33,6 +44,52 @@ app.put('/api/model', (req, res) => {
     res.status(400).json({ error: `Unknown model: ${model}. Available: ${Object.keys(MODELS).join(', ')}` });
   }
 });
+
+async function gradeSubmissionByModel(pdfPath, assignment, modelName, options) {
+  if (!MODELS[modelName]) {
+    throw new Error(`Unknown model: ${modelName}. Available: ${Object.keys(MODELS).join(', ')}`);
+  }
+  if (isCliGradingModel(modelName)) {
+    return gradeSubmissionWithCli(pdfPath, assignment, modelName, options);
+  }
+  return gradeSubmission(pdfPath, assignment, modelName, options);
+}
+
+async function gradeSingleQuestionByModel(pdfPath, questionId, assignment, modelName, options) {
+  if (!MODELS[modelName]) {
+    throw new Error(`Unknown model: ${modelName}. Available: ${Object.keys(MODELS).join(', ')}`);
+  }
+  if (isCliGradingModel(modelName)) {
+    return gradeSingleQuestionWithCli(pdfPath, questionId, assignment, modelName, options);
+  }
+  return gradeSingleQuestion(pdfPath, questionId, assignment, modelName, options);
+}
+
+function getExpectedStudentForPanel(sub) {
+  if (!sub?.student_id) return {};
+  const isStandardId = /^\d{5,15}$/.test(sub.student_id);
+  const rosterStudent = isStandardId ? db.getStudentById(sub.student_id) : null;
+  if (!rosterStudent) return {};
+  return { student_id: rosterStudent.id, student_name: rosterStudent.name || sub.student_name || '' };
+}
+
+function panelModelLabel() {
+  return 'Panel: Gemini 3.5 Flash + AGY Gemini 3.1 Pro High -> Codex GPT-5.5 xhigh';
+}
+
+function panelStageMessage(stage) {
+  const seconds = stage.elapsed_ms ? (stage.elapsed_ms / 1000).toFixed(1) + 's' : '';
+  switch (stage.phase) {
+    case 'panel_start': return '启动三模型仲裁流程';
+    case 'initial_start': return '初评开始：' + stage.model_label;
+    case 'initial_done': return '初评完成：' + stage.model_label + '，' + stage.score + '分' + (seconds ? '，' + seconds : '');
+    case 'initial_error': return '初评失败：' + stage.model_label + ' — ' + stage.error;
+    case 'arbitration_start': return 'Codex 仲裁开始';
+    case 'arbitration_done': return 'Codex 仲裁完成，' + stage.score + '分' + (seconds ? '，' + seconds : '');
+    case 'panel_done': return '三模型仲裁完成，' + stage.score + '分' + (seconds ? '，总耗时 ' + seconds : '');
+    default: return stage.phase || 'panel stage';
+  }
+}
 
 // ── PDF serving ──
 app.get('/api/submissions/:id/pdf', (req, res) => {
@@ -223,6 +280,15 @@ function getRubricMaxScores(assignment) {
   } catch { return {}; }
 }
 
+function getAssignmentMaxScore(assignment) {
+  try {
+    const rubric = loadRubric(assignment || 'default');
+    return rubric.total_score || (rubric.questions || []).reduce((sum, q) => sum + (q.max_score || 0), 0) || 100;
+  } catch {
+    return 100;
+  }
+}
+
 function normalizeGrade(grade, assignment) {
   if (!grade || !grade.questions) return grade;
   const maxScoreMap = getRubricMaxScores(assignment);
@@ -304,7 +370,7 @@ function reconcileStudentIdentity(submissionId, aiResult, force = false) {
     } else {
       // Conflict: AI-extracted ID matches one student, but AI-extracted Name matches another.
       // Trust the name match because digit OCR typos are extremely common in AI parsing
-      // (e.g. 524030910186 vs 524030910196).
+      // Handwritten digit OCR typos are common, so use the roster match as the authority.
       console.log(`⚠️ Identity conflict for submission ${submissionId}: AI ID matches ${studentById.name} (${studentById.id}) but AI Name matches ${studentByName.name} (${studentByName.id}). Trusting name match.`);
       rosterStudent = studentByName;
     }
@@ -442,13 +508,13 @@ app.post('/api/submissions/:id/ai-grade', async (req, res) => {
   const label = sub.student_name || sub.student_id || basename(sub.pdf_path);
 
   try {
-    db.updateSubmissionStatus(sub.id, 'grading');
+    db.beginAiGrading(sub.id);
     broadcast({ type: 'grading_start', id: sub.id, label, model: modelName, time: new Date().toLocaleTimeString('zh-CN') });
 
     const onRetry = (attempt, max, reason) => {
       broadcast({ type: 'retry', id: sub.id, label, attempt, max, reason, time: new Date().toLocaleTimeString('zh-CN') });
     };
-    const result = await gradeSubmission(pdfPath, sub.assignment, model, { onRetry });
+    const result = await gradeSubmissionByModel(pdfPath, sub.assignment, modelName, { onRetry });
     db.updateAiGrade(sub.id, result);
 
     // Reconcile student identity from AI output
@@ -456,7 +522,7 @@ app.post('/api/submissions/:id/ai-grade', async (req, res) => {
 
     const updatedSub = db.getSubmission(sub.id);
     const finalLabel = updatedSub.student_name || updatedSub.student_id || label;
-    broadcast({ type: 'grading_done', id: sub.id, label: finalLabel, score: result.total_score, model: modelName, time: new Date().toLocaleTimeString('zh-CN') });
+    broadcast({ type: 'grading_done', id: sub.id, label: finalLabel, score: result.total_score, max_score: getAssignmentMaxScore(sub.assignment), model: modelName, time: new Date().toLocaleTimeString('zh-CN') });
 
     res.json({ success: true, grade: result, model: modelName });
   } catch (err) {
@@ -464,6 +530,60 @@ app.post('/api/submissions/:id/ai-grade', async (req, res) => {
     broadcast({ type: 'grading_error', id: sub.id, label, error: err.message, time: new Date().toLocaleTimeString('zh-CN') });
     console.error('AI grading error:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ── Panel Grading: parallel initial graders + Codex arbitration ──
+app.post('/api/submissions/:id/panel-grade', async (req, res) => {
+  const sub = db.getSubmission(Number(req.params.id));
+  if (!sub) return res.status(404).json({ error: 'Not found' });
+
+  const pdfPath = resolveSubmissionPdfPath(sub.pdf_path);
+  if (!existsSync(pdfPath)) return res.status(404).json({ error: 'PDF not found' });
+
+  const label = sub.student_name || sub.student_id || basename(sub.pdf_path);
+  const model = panelModelLabel();
+
+  try {
+    db.beginAiGrading(sub.id);
+    broadcast({ type: 'grading_start', id: sub.id, label, model, time: new Date().toLocaleTimeString('zh-CN') });
+
+    const onRetry = (attempt, max, reason) => {
+      broadcast({ type: 'retry', id: sub.id, label, attempt, max, reason, time: new Date().toLocaleTimeString('zh-CN') });
+    };
+    const onStage = (stage) => {
+      broadcast({
+        type: 'panel_stage',
+        id: sub.id,
+        label,
+        phase: stage.phase,
+        message: panelStageMessage(stage),
+        model: stage.model_label || model,
+        score: stage.score,
+        elapsed_ms: stage.elapsed_ms,
+        time: new Date().toLocaleTimeString('zh-CN')
+      });
+    };
+
+    const result = await gradeSubmissionWithPanel(pdfPath, sub.assignment, {
+      expectedStudent: getExpectedStudentForPanel(sub),
+      onRetry,
+      onStage,
+    });
+    db.updateAiGrade(sub.id, result);
+    reconcileStudentIdentity(sub.id, result, false);
+
+    const updatedSub = db.getSubmission(sub.id);
+    const finalLabel = updatedSub.student_name || updatedSub.student_id || label;
+    broadcast({ type: 'grading_done', id: sub.id, label: finalLabel, score: result.total_score, max_score: getAssignmentMaxScore(sub.assignment), model, time: new Date().toLocaleTimeString('zh-CN') });
+
+    res.json({ success: true, grade: result, model, workflow: PANEL_WORKFLOW });
+  } catch (err) {
+    db.updateSubmissionStatus(sub.id, 'error');
+    broadcast({ type: 'grading_error', id: sub.id, label, error: err.message, time: new Date().toLocaleTimeString('zh-CN') });
+    console.error('Panel grading error:', err);
+    res.status(500).json({ error: err.message, panel_results: err.panel_results || null });
   }
 });
 
@@ -541,7 +661,7 @@ app.post('/api/submissions/:id/ai-grade-question', async (req, res) => {
     };
 
     // Call grading engine for the single question
-    const result = await gradeSingleQuestion(pdfPath, questionId, sub.assignment, modelName, { onRetry });
+    const result = await gradeSingleQuestionByModel(pdfPath, questionId, sub.assignment, modelName, { onRetry });
 
     // Locate and merge the new single-question result
     const qIdx = grade.questions.findIndex(q => q.question_id === questionId);
@@ -574,6 +694,7 @@ app.post('/api/submissions/:id/ai-grade-question', async (req, res) => {
       id: sub.id,
       label: `${finalLabel} (第 ${questionId} 题)`,
       score: grade.total_score,
+      max_score: getAssignmentMaxScore(sub.assignment),
       model: modelName,
       time: new Date().toLocaleTimeString('zh-CN')
     });
@@ -590,6 +711,73 @@ app.post('/api/submissions/:id/ai-grade-question', async (req, res) => {
     console.error(`AI single-question grading error:`, err);
     res.status(500).json({ error: err.message });
   }
+});
+
+
+// Batch panel grading
+app.post('/api/submissions/batch-panel-grade', async (req, res) => {
+  const subs = db.getSubmissions(req.body.assignment || 'default')
+    .filter(s => s.status === 'pending' || s.status === 'error');
+
+  const model = panelModelLabel();
+  broadcast({ type: 'batch_start', count: subs.length, model, time: new Date().toLocaleTimeString('zh-CN') });
+  res.json({ message: 'Starting panel grading of ' + subs.length + ' submissions', count: subs.length, model, workflow: PANEL_WORKFLOW });
+
+  for (let i = 0; i < subs.length; i++) {
+    const sub = subs[i];
+    const progress = String(i + 1) + '/' + String(subs.length);
+    let pdfPath;
+    try {
+      pdfPath = resolveSubmissionPdfPath(sub.pdf_path);
+    } catch (err) {
+      broadcast({ type: 'grading_error', id: sub.id, label: sub.student_name || sub.student_id || sub.pdf_path, error: err.message, progress, time: new Date().toLocaleTimeString('zh-CN') });
+      continue;
+    }
+    if (!existsSync(pdfPath)) continue;
+
+    const label = sub.student_name || sub.student_id || basename(sub.pdf_path);
+    try {
+      db.beginAiGrading(sub.id);
+      broadcast({ type: 'grading_start', id: sub.id, label, progress, model, time: new Date().toLocaleTimeString('zh-CN') });
+
+      const onRetry = (attempt, max, reason) => {
+        broadcast({ type: 'retry', id: sub.id, label, attempt, max, reason, progress, time: new Date().toLocaleTimeString('zh-CN') });
+      };
+      const onStage = (stage) => {
+        broadcast({
+          type: 'panel_stage',
+          id: sub.id,
+          label,
+          progress,
+          phase: stage.phase,
+          message: panelStageMessage(stage),
+          model: stage.model_label || model,
+          score: stage.score,
+          elapsed_ms: stage.elapsed_ms,
+          time: new Date().toLocaleTimeString('zh-CN')
+        });
+      };
+
+      const result = await gradeSubmissionWithPanel(pdfPath, sub.assignment, {
+        expectedStudent: getExpectedStudentForPanel(sub),
+        onRetry,
+        onStage,
+      });
+      db.updateAiGrade(sub.id, result);
+      reconcileStudentIdentity(sub.id, result, false);
+
+      const updatedSub = db.getSubmission(sub.id);
+      const finalLabel = updatedSub.student_name || updatedSub.student_id || label;
+      broadcast({ type: 'grading_done', id: sub.id, label: finalLabel, score: result.total_score, max_score: getAssignmentMaxScore(sub.assignment), progress, model, time: new Date().toLocaleTimeString('zh-CN') });
+      console.log('✅ Panel graded: ' + finalLabel + ' — ' + result.total_score + '/' + getAssignmentMaxScore(sub.assignment));
+    } catch (err) {
+      db.updateSubmissionStatus(sub.id, 'error');
+      broadcast({ type: 'grading_error', id: sub.id, label, error: err.message, progress, time: new Date().toLocaleTimeString('zh-CN') });
+      console.error('❌ Panel grading error ' + sub.pdf_path + ':', err.message);
+    }
+  }
+  broadcast({ type: 'batch_done', count: subs.length, time: new Date().toLocaleTimeString('zh-CN') });
+  console.log('Batch panel grading complete.');
 });
 
 // Batch AI grading
@@ -609,13 +797,13 @@ app.post('/api/submissions/batch-grade', async (req, res) => {
 
     const label = sub.student_name || sub.student_id || basename(sub.pdf_path);
     try {
-      db.updateSubmissionStatus(sub.id, 'grading');
+      db.beginAiGrading(sub.id);
       broadcast({ type: 'grading_start', id: sub.id, label, progress: `${i + 1}/${subs.length}`, model, time: new Date().toLocaleTimeString('zh-CN') });
 
       const onRetry = (attempt, max, reason) => {
         broadcast({ type: 'retry', id: sub.id, label, attempt, max, reason, progress: `${i + 1}/${subs.length}`, time: new Date().toLocaleTimeString('zh-CN') });
       };
-      const result = await gradeSubmission(pdfPath, sub.assignment, null, { onRetry });
+      const result = await gradeSubmissionByModel(pdfPath, sub.assignment, model, { onRetry });
       db.updateAiGrade(sub.id, result);
 
       // Reconcile student identity
@@ -623,8 +811,8 @@ app.post('/api/submissions/batch-grade', async (req, res) => {
 
       const updatedSub = db.getSubmission(sub.id);
       const finalLabel = updatedSub.student_name || updatedSub.student_id || label;
-      broadcast({ type: 'grading_done', id: sub.id, label: finalLabel, score: result.total_score, progress: `${i + 1}/${subs.length}`, time: new Date().toLocaleTimeString('zh-CN') });
-      console.log(`✅ Graded: ${finalLabel} — ${result.total_score}/120`);
+      broadcast({ type: 'grading_done', id: sub.id, label: finalLabel, score: result.total_score, max_score: getAssignmentMaxScore(sub.assignment), progress: `${i + 1}/${subs.length}`, model, time: new Date().toLocaleTimeString('zh-CN') });
+      console.log(`✅ Graded: ${finalLabel} — ${result.total_score}/${getAssignmentMaxScore(sub.assignment)}`);
     } catch (err) {
       db.updateSubmissionStatus(sub.id, 'error');
       broadcast({ type: 'grading_error', id: sub.id, label, error: err.message, progress: `${i + 1}/${subs.length}`, time: new Date().toLocaleTimeString('zh-CN') });
@@ -757,6 +945,76 @@ app.post('/api/upload-pdfs', pdfUpload.array('pdfs', 200), (req, res) => {
 
   console.log(`📤 Uploaded ${imported} PDFs`);
   res.json({ imported, total: req.files?.length || 0, results });
+});
+
+app.delete('/api/submissions/:id', (req, res) => {
+  const sub = db.getSubmission(Number(req.params.id));
+  if (!sub) return res.status(404).json({ error: 'Submission not found' });
+
+  try {
+    const deleteFile = req.query.deleteFile !== 'false';
+    let fileDeleted = false;
+    let fileMissing = false;
+
+    if (deleteFile && sub.pdf_path) {
+      const pdfPath = resolveSubmissionPdfPath(sub.pdf_path);
+      if (existsSync(pdfPath)) {
+        unlinkSync(pdfPath);
+        fileDeleted = true;
+      } else {
+        fileMissing = true;
+      }
+    }
+
+    db.clearChatMessages(sub.id);
+    db.deleteSubmission(sub.id);
+
+    res.json({ success: true, id: sub.id, file_deleted: fileDeleted, file_missing: fileMissing });
+  } catch (err) {
+    console.error('Delete submission failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/submissions/:id/replace-pdf', pdfUpload.single('pdf'), (req, res) => {
+  const sub = db.getSubmission(Number(req.params.id));
+  if (!sub) {
+    if (req.file) unlinkSync(req.file.path);
+    return res.status(404).json({ error: 'Submission not found' });
+  }
+  if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
+
+  try {
+    const assignmentDir = join(__dirname, 'submissions', sub.assignment);
+    mkdirSync(assignmentDir, { recursive: true });
+
+    const oldPdfPath = resolveSubmissionPdfPath(sub.pdf_path);
+    const oldName = basename(sub.pdf_path || '');
+    const uploadedName = (req.file.originalname || `replacement_${Date.now()}.pdf`).replace(/[\/\\]/g, '_');
+    const targetName = oldName && extname(oldName).toLowerCase() === '.pdf' ? oldName : uploadedName;
+    const targetPath = resolve(join(assignmentDir, targetName));
+    const assignmentRoot = resolve(assignmentDir);
+    if (targetPath !== assignmentRoot && !targetPath.startsWith(assignmentRoot + sep)) {
+      throw new Error('Invalid replacement path');
+    }
+
+    copyFileSync(req.file.path, targetPath);
+    unlinkSync(req.file.path);
+
+    if (oldPdfPath !== targetPath && existsSync(oldPdfPath)) {
+      unlinkSync(oldPdfPath);
+    }
+
+    const newRelPath = join(sub.assignment, targetName);
+    db.clearChatMessages(sub.id);
+    db.resetSubmissionForReplacement(sub.id, newRelPath);
+
+    res.json({ success: true, id: sub.id, pdf_path: newRelPath, status: 'pending' });
+  } catch (err) {
+    if (req.file && existsSync(req.file.path)) unlinkSync(req.file.path);
+    console.error('Replace PDF failed:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Sync roster with unmatched submissions ──

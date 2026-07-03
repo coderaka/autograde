@@ -1,147 +1,196 @@
-# AutoGrade Web App 📝🎋
+# AutoGrade
 
-<p align="left">
-  <b>简体中文</b> | <a href="README_EN.md">English</a>
-</p>
+AutoGrade is a local web app for AI-assisted exam and homework grading. It combines roster-aware PDF management, rubric-based structured grading, side-by-side manual review, and optional multi-model arbitration.
 
-**AutoGrade** 是一个基于 Node.js, SQLite 与 Google Gemini 3.5 的通用化多作业智能批改系统。它拥有极佳的**竹墨 (Bamboo Ink)** 现代极简设计，提供双栏并排的 PDF 阅卷视窗、多轮 AI 交互对话框、单题重评、无损 JSON 恢复等高级批改功能，致力于让助教和教师的阅卷体验流畅、愉悦而高效。
+The app is designed to keep student submissions, rosters, grades, databases, and course-specific answer keys local by default.
 
----
+## Features
 
-## ✨ 核心特性
+- Multi-assignment dashboard with isolated rubric, submission, and grade data per assignment.
+- Roster import from Excel and roster-based identity matching.
+- PDF upload, filesystem scan, submission deletion, and PDF replacement.
+- Side-by-side grading view with PDF navigation, editable scores, comments, and finalization.
+- Structured rubric grading with Gemini API models.
+- Optional CLI graders through Codex CLI and AGY CLI.
+- Panel grading workflow: Gemini 3.5 Flash and AGY Gemini 3.1 Pro High run initial grading in parallel, then Codex GPT-5.5 xhigh arbitrates.
+- Single-question regrading for targeted review.
+- JSON backup and restore for assignment state.
+- Export to spreadsheet-friendly rows with per-question scores.
 
-- 📁 **多作业架构与动态发现 (Multi-Assignment Architecture)**：支持多个独立作业/考试（如 `midterm`, `hw1`, `quiz2`）并存，通过顶部下拉栏无缝热切换，实现完全的数据和物理文件隔离。
-- 🤖 **Gemini 驱动 AI 评分规约生成器 (AI Rubric Generator)**：助教只需粘贴/上传 Markdown 格式的标准答案和分值说明（`answers.md`），系统便能自动调用 `gemini-3.5-flash` 通过 strict Zod Schema 生成结构严密的 `rubric.json` 指标树。
-- 💬 **双栏交互批改与拖拽平移 (Side-by-side Grading Pane & Grab-to-Pan)**：
-  - **折叠式侧边栏**：支持一键隐藏聊天栏，释放 340px 的宝贵桌面空间给 PDF 试卷。
-  - **鼠标拖拽抓手**：开启 Grab-to-Pan（抓手平移）功能，可随意拖拽放大后的手写试卷，体验极其顺滑。
-  - **修改评分与理由**：助教不仅能直接改分，还可以实时编辑和保存手写的修改理由与评语。
-- 🔄 **单题 AI 隔离重评 (Isolated Sub-Question Regrading)**：无需重新批改整份卷子，点击某道具体小题（如 `1b`）旁的 `🔄` 按钮，即可瞬间单独评阅并更新总分。
-- 🛡️ **花名册隔离保护与自动同步 (Roster Isolation & Sync)**：
-  - 手写姓名不匹配的试卷导入时自动关联 `student_id = NULL`，确保主花名册不受脏数据污染。
-  - 支持文件名匹配与智能 AI TYPO 容错纠错匹配，点击 **“🔄 同步花名册”** 自动完成数据库关联与物理文件重命名。
-- 📤 **无损打包备份与完美还原 (Lossless Backup & Restore)**：支持一键将特定作业的全部成绩、评语、锁定状态及完整的 TA 对话记录导出为单个 `.json` 文件。针对班级量大时的接口超载，后端已打通 **`10mb` 极限容量限额**，支持 200 人以上的大体量对话完美恢复。
+## Privacy
 
----
+Do not commit private course or student data. The repository is configured to ignore:
 
-## 🚀 快速启动
+- `.env`
+- `db/*.db` and database backups
+- `submissions/`
+- course-specific `rubrics/<assignment>/` folders
+- `uploads/`
+- generated `results/`
 
-### 1. 环境准备
-确保你的本地环境已安装 [Node.js](https://nodejs.org/) (建议版本 v18+)。
+Only generic system code and templates should be committed. Keep real rosters, student PDFs, grading databases, answer keys, assignment rubrics, and alias maps local.
 
-### 2. 获取代码与安装依赖
+## Requirements
+
+- Node.js 18+
+- A Gemini API key for API-based grading
+- Optional: Codex CLI for Codex arbitration
+- Optional: AGY CLI for AGY-backed grading
+- Optional: Poppler `pdftoppm` available on PATH for CLI image rendering
+
+## Setup
+
 ```bash
 git clone https://github.com/coderaka/autograde.git
 cd autograde
 npm install
 ```
 
-### 3. 配置环境变量
-在项目根目录下新建 `.env` 文件，并填入你的 Google Gemini API Key：
+Create `.env`:
+
 ```env
-GEMINI_API_KEY=your_actual_gemini_api_key_here
+GEMINI_API_KEY=your_gemini_api_key
 PORT=3000
+
+# Optional CLI paths if they are not on PATH
+CODEX_CLI_PATH=/path/to/codex
+AGY_CLI_PATH=/path/to/agy
+PDFTOPPM_PATH=/path/to/pdftoppm
+
+# Optional CLI tuning
+CLI_GRADING_RENDER_DPI=160
+CLI_GRADING_MAX_PAGES=32
+CLI_GRADING_TIMEOUT_MS=1200000
+AGY_PRINT_TIMEOUT=20m
 ```
 
-### 4. 启动开发服务器
+Start the app:
+
 ```bash
 npm run dev
 ```
-启动后，在浏览器访问：[http://localhost:3000](http://localhost:3000)
 
----
+Open [http://localhost:3000](http://localhost:3000).
 
-## 📋 学生花名册指南 (Student Roster Guide)
+For production-like local use:
 
-### 1. 花名册的作用
-在 AutoGrade 系统中，官方学生花名册（Roster）常驻于 SQLite 数据库的 `students` 表中，起到核心的安全与数据分析作用：
-- **身份精准映射 (Identity Matching)**：当系统扫描物理 PDF 答卷或执行 AI 阅卷时，会自动提取答卷上的学号和姓名，并与花名册进行智能比对（支持拼音相似度及 AI 容错纠错），从而将答卷精准关联到特定学生。
-- **防脏数据污染 (Anti-Data Contamination)**：如果导入的试卷包含拼写错误或手写极度潦草、无法识别的个人信息，系统会自动将其标记为 `student_id = NULL`（未关联），而**绝对不会**在主花名册中新建垃圾记录，确保学生名单干净纯洁。
-- **全班维度统计 (Class-wide Stats)**：建立完整花名册后，系统能够精准识别“哪些学生未交作业”（Missing Submissions）、计算交卷率，并在成绩汇总看板（Dashboard）上输出精确的班级分数分布和平均分。
-
-### 2. 如何导入与准备花名册
-学生花名册存储于 SQLite 的 `students` 表，表结构包含：`id` (学号/主键)、`name` (姓名)、`email` (邮箱/可选)。
-
-系统提供极简、直观的一键式导入方案：
-1. **准备 Excel 文件**：新建一个 Excel 表格，确保其中包含两列关键信息，表头名称可以是：
-   - **学号列**：支持 `学号`、`Student ID`、`id` 中的任意一种。
-   - **姓名列**：支持 `姓名`、`Name`、`name` 中的任意一种。
-   - **邮箱列 (可选)**：支持 `邮箱`、`Email`、`email` 中的任意一种。
-2. **在 UI 上传**：打开 AutoGrade 首页，在左上角的 **“学生花名册”** 面板上，点击 **“📋 导入花名册”** 按钮，选择准备好的 Excel 文件。
-3. 系统将秒级完成解析、排重并同步至本地数据库，首页看板会立即实时刷新展示导入的学生总数！
-
----
-
-## 🔧 新建作业指南 (How to New Assignment)
-
-为了提供极高的自由度，系统同时支持 **界面快速创建** 和 **物理磁盘管理** 两种方案：
-
-### 方案 A：在前端 UI 快速创建 (推荐)
-1. 访问首页，点击顶部栏“当前作业”下拉菜单右侧的 **“➕ 新建作业”** 按钮。
-2. 在磨砂玻璃对话框中填写：
-   - **作业 Key**：拼音或英文唯一名称（如 `hw1`），不可有中文或空格，它将对应物理文件夹。
-   - **作业名称**：中文显示标题（如 `第一次概率论作业`）。
-   - **标准答案 (Answers.md)**：将你的标准答案与得分规则 Markdown 直接粘贴在此，然后点击 **“🤖 AI 生成标准”**。Gemini 会自动生成对应的 `rubric.json` 分值树。当然，你也可以直接粘贴 JSON。
-3. 点击 **“确认创建”**，系统会自动在后台建立文件夹并热加载。
-4. 将学生作业的 PDF 文件，拷贝放入项目中的：
-   📂 `submissions/{作业Key}/` (例如：[submissions/hw1/](file:///Users/chihao/Projects/autograde/submissions/))
-5. 回到浏览器刷新或点击“扫描物理文件”即可开始评卷！
-
-### 方案 B：在本地磁盘直接放置
-1. 在项目根目录的 `rubrics/` 文件夹下新建作业名称目录（如 `hw2`）：
-   📂 `/Users/chihao/Projects/autograde/rubrics/hw2/`
-2. 放入 `rubric.json`（可参考 [rubrics/rubric_template.json](file:///Users/chihao/Projects/autograde/rubrics/rubric_template.json) 格式）和可选的 `answers.md`。
-3. 建立物理 PDF 文件夹：
-   📂 `/Users/chihao/Projects/autograde/submissions/hw2/`
-   并放入学生的答卷。
-4. 刷新网页，下拉菜单中将自动出现 `hw2` 选项。
-
----
-
-## 📁 目录结构
-
-```text
-autograde/
-├── server.js              # Express 核心路由与 10MB JSON 大体量解析层
-├── lib/
-│   ├── db.js              # SQLite 数据库接口 (学生花名册与成绩关联)
-│   ├── gemini.js          # Gemini 统一 SDK 交互接口 (@google/genai)
-│   └── grading-engine.js  # 批改逻辑引擎 (支持单题与全卷批改)
-├── rubrics/               # 作业评分标准目录
-│   └── {assignment_key}/  # 每一个子文件夹代表一个独立的作业
-│       ├── rubric.json    # AI 自动生成或手工编写的得分规约
-│       └── answers.md     # 作业的标准答案
-├── submissions/           # 学生物理 PDF 存储库 (由 assignment_key 隔离)
-│   └── {assignment_key}/  # 学生答卷原件
-├── db/                    # 本地 SQLite 数据库文件
-├── public/                # 极简竹墨 (Bamboo Ink) 双主题前端
-│   ├── index.html         # 成绩汇总看板与统计中心
-│   ├── grade.html         # 双栏评卷及多轮 AI 对话操作间
-│   ├── css/               # 精心调制的配色及平移折叠动画库
-│   └── js/                # 批改、Regrade 与前端交互控制逻辑
-└── README.md              # 说明文档
+```bash
+npm start
 ```
 
----
+## Basic Workflow
 
-## 📤 备份与还原 (Backup & Perfect Restore)
+1. Import the student roster from Excel. Supported column names include `学号`, `Student ID`, `id`, `姓名`, `Name`, and `name`.
+2. Create or select an assignment.
+3. Add a rubric under `rubrics/<assignment>/rubric.json`. An optional `answers.md` can be used locally for grading context.
+4. Upload PDFs through the UI or place them in `submissions/<assignment>/` and scan.
+5. Run panel grading or single-model grading.
+6. Review the AI result, edit scores/comments, and finalize when ready.
+7. Export grades or create a backup JSON.
 
-- **备份**：点击首页顶部栏 **“📤 备份数据”**，系统会将当前所选作业的**所有成绩、修改理由、锁定状态以及所有的多轮 TA 聊天对话树**，无损打包导出为一个 `.json` 文件并下载。
-- **还原**：点击 **“📥 导入备份”**，选择之前导出的 JSON 文件。即便该备份中包含上百人且有海量文本记录，系统也会通过后台的高容额解析管道瞬间更新数据库、自动补齐缺失的学生主信息，并完美还原所有评分与会话历史。
-  > [!IMPORTANT]
-  > 还原操作仅覆盖逻辑数据库中的打分和对话，它假设物理 PDF 文件已经预先存放在对应作业的 `submissions/{key}/` 文件夹中。
+## Assignment Files
 
----
+A rubric has this shape:
 
-## ⚙️ 模型配置与开发标准
+```json
+{
+  "assignment": "Example Exam",
+  "total_score": 100,
+  "questions": [
+    {
+      "id": "section_id",
+      "title": "Section title",
+      "max_score": 25,
+      "sub_questions": [
+        {
+          "id": "question_id",
+          "max_score": 10,
+          "description": "What to grade",
+          "key_points": ["Expected point 1", "Expected point 2"],
+          "common_mistakes": ["Common mistake"]
+        }
+      ]
+    }
+  ]
+}
+```
 
-本系统完全遵守最新的 **Unified @google/genai SDK** 开发规范，默认采用 `gemini-3.5-flash` 提供闪电般迅捷的响应，同时支持无缝切换至更擅长精细逻辑推导的 `gemini-3.1-pro` 族系模型。所有的结构化指标分析都基于 Zod Schema 完成约束，具备极高的鲁棒性。
+Use `rubrics/rubric_template.json` as a starting point.
 
----
+### Question Alias Maps
 
-## 开源协议
+If an exam has multiple versions with the same questions in different orders, keep a local alias file at:
 
-MIT License. Maintainer: Forge 🔨 (The Bamboo Grove Agent System).
+```text
+rubrics/<assignment>/aliases.json
+```
 
----
-*竹林集 🎋 · Maintained by Forge.* 🔨
+Example:
+
+```json
+{
+  "default_variant": "A",
+  "variant_markers": {
+    "A": ["2d"],
+    "B": ["3d"]
+  },
+  "variants": {
+    "A": {
+      "1a": "canonical_question_id"
+    },
+    "B": {
+      "2a": "canonical_question_id"
+    }
+  }
+}
+```
+
+Alias files are intentionally ignored by git because they are course-specific.
+
+## Grading Modes
+
+### Panel Grading
+
+Panel grading is the recommended workflow for high-stakes exams:
+
+1. Gemini 3.5 Flash performs an initial grade through the Gemini API.
+2. AGY Gemini 3.1 Pro High performs an independent initial grade through the local AGY CLI.
+3. Codex GPT-5.5 xhigh reads the PDF, rubric, reference context, and both initial grades, then produces the final arbitration result.
+
+Within one submission, the two initial graders run in parallel. Batch grading processes submissions sequentially by design, which is slower but safer for local CLI resources and API limits.
+
+### Single-Question Regrading
+
+In the grading view, each question can be regraded independently. This is useful after a manual review finds one suspicious sub-question.
+
+## Roster and Identity Matching
+
+AutoGrade can identify submissions through three mechanisms:
+
+- Filename parsing, typically `student_id_name.pdf`.
+- AI-extracted name and student ID from the first page of the PDF.
+- Manual identity edits in the UI.
+
+The roster is authoritative. If AI output conflicts with the roster, the system prefers roster matches and avoids creating new student records from noisy OCR.
+
+## Backups and Exports
+
+- Backup exports preserve grading JSON, final scores, notes, status, and chat messages for the selected assignment.
+- Restore imports those records back into the local database.
+- Grade export produces rows with student identity, status, total score, and per-question scores.
+
+Backups may contain private student data and should not be committed.
+
+## Development Checks
+
+```bash
+node --check server.js
+node --check lib/gemini.js
+node --check lib/grading-engine.js
+node --check lib/cli-grading-engine.js
+node --check lib/panel-grading-engine.js
+```
+
+## License
+
+MIT

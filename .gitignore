@@ -8,11 +8,14 @@ node_modules/
 submissions/*
 !submissions/.gitkeep
 
-# Rubric answers (course-specific)
-rubrics/*/answers.md
+# Course-specific rubrics and answers
+rubrics/*/
+!rubrics/.gitkeep
+!rubrics/rubric_template.json
 
 # Database
 db/*.db
+db/*.db*
 
 # Grading results (generated)
 results/
@@ -23,3 +26,6 @@ results/
 
 # Uploads
 uploads/
+
+# Local scratch/debug scripts
+scratch/

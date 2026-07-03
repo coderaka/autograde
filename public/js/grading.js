@@ -78,7 +78,7 @@ async function loadSubmission() {
     document.getElementById('nav-index').textContent = `${idx + 1} / ${allSubmissions.length}`;
 
     // Load PDF
-    initPdfViewer(`${API}/api/submissions/${submissionId}/pdf`);
+    initPdfViewer(`${API}/api/submissions/${submissionId}/pdf?t=${Date.now()}`);
 
     // Load grade
     currentGrade = submission.final_grade || submission.ai_grade || null;
@@ -159,6 +159,56 @@ async function regradeQuestion(qid) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatElapsed(ms) {
+  if (!ms && ms !== 0) return '—';
+  if (ms < 1000) return ms + ' ms';
+  return (ms / 1000).toFixed(1) + ' s';
+}
+
+function renderPanelSummaryHtml() {
+  const panel = currentGrade?.grading_panel;
+  if (!panel) return '';
+  const gemini = panel.initial?.gemini;
+  const agy = panel.initial?.agy;
+  const arb = panel.arbitrator;
+  const rows = [
+    { label: gemini?.model_label || 'Gemini 3.5 Flash', score: gemini?.grade?.total_score, time: gemini?.elapsed_ms },
+    { label: agy?.model_label || 'AGY Gemini 3.1 Pro High', score: agy?.grade?.total_score, time: agy?.elapsed_ms },
+    { label: arb?.model_label || 'Codex GPT-5.5 xhigh', score: currentGrade.total_score, time: arb?.elapsed_ms },
+  ];
+  const cards = rows.map(row => '<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;background:var(--bg-elevated);">'
+    + '<div style="font-size:0.72rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + escapeHtml(row.label) + '">' + escapeHtml(row.label) + '</div>'
+    + '<div style="font-size:1.05rem;font-weight:700;margin-top:3px;">' + (row.score ?? '—') + '</div>'
+    + '<div class="mono" style="font-size:0.72rem;color:var(--text-secondary);">' + formatElapsed(row.time) + '</div>'
+    + '</div>').join('');
+  const disagreements = (panel.disagreements || []).filter(d => (d.spread ?? 0) > 0 || d.needs_review).slice(0, 8);
+  const disagreementRows = disagreements.length ? disagreements.map(d => '<tr>'
+    + '<td class="mono">' + escapeHtml(d.question_id) + '</td>'
+    + '<td class="mono">' + (d.gemini_score ?? '—') + '</td>'
+    + '<td class="mono">' + (d.agy_score ?? '—') + '</td>'
+    + '<td class="mono" style="font-weight:700;">' + (d.final_score ?? '—') + '</td>'
+    + '<td class="mono">' + (d.spread ?? '—') + '</td>'
+    + '</tr>').join('') : '<tr><td colspan="5" style="color:var(--text-muted);">两个初评没有明显分歧</td></tr>';
+  return '<div class="panel-summary" style="margin-bottom:14px;padding:12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-secondary);">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;">'
+    + '<div style="font-weight:700;">三模型仲裁概览</div>'
+    + '<div class="mono" style="font-size:0.72rem;color:var(--text-muted);">总耗时 ' + formatElapsed(panel.elapsed_ms) + '</div>'
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px;">' + cards + '</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:0.76rem;">'
+    + '<thead><tr style="color:var(--text-muted);text-align:left;"><th>题目</th><th>Gemini</th><th>AGY</th><th>仲裁</th><th>差值</th></tr></thead>'
+    + '<tbody>' + disagreementRows + '</tbody></table>'
+    + '</div>';
+}
 function renderScorePanel() {
   const container = document.getElementById('score-items');
 
@@ -169,7 +219,7 @@ function renderScorePanel() {
         <h3>尚未 AI 批改</h3>
         <p>请先在 Dashboard 触发 AI 批改</p>
       </div>`;
-    document.getElementById('total-score').textContent = '— / 120';
+    document.getElementById('total-score').textContent = '— / 100';
     return;
   }
 
@@ -181,7 +231,7 @@ function renderScorePanel() {
     groups[mainQ].push(q);
   }
 
-  let html = '';
+  let html = renderPanelSummaryHtml();
   for (const [mainQ, questions] of Object.entries(groups)) {
     const groupTotal = questions.reduce((s, q) => s + q.awarded_score, 0);
     const groupMax = questions.reduce((s, q) => s + q.max_score, 0);
@@ -326,31 +376,30 @@ document.getElementById('btn-finalize').addEventListener('click', async () => {
 // ── AI Re-grade ──
 
 document.getElementById('btn-regrade').addEventListener('click', async () => {
-  if (!confirm('确认要用 AI 重新批改这份卷子？当前评分将被覆盖。')) return;
+  if (!confirm('确认要用三模型仲裁流程重新批改这份卷子？当前评分将被覆盖。')) return;
 
   const btn = document.getElementById('btn-regrade');
   btn.disabled = true;
-  btn.textContent = '⏳ 正在重评...';
+  btn.textContent = '⏳ 正在仲裁...';
 
   // Show loading in score panel
   document.getElementById('score-items').innerHTML = `
     <div class="empty-state" style="padding:40px 20px;">
       <div class="spinner" style="margin:0 auto 12px;"></div>
-      <p>AI 正在重新批改...</p>
+      <p>三模型仲裁正在批改...</p>
     </div>`;
 
   try {
-    const res = await fetch(`${API}/api/submissions/${submissionId}/ai-grade`, {
+    const res = await fetch(`${API}/api/submissions/${submissionId}/panel-grade`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: document.getElementById('regrade-model-select').value }),
-    });
+          });
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.error);
     }
     const data = await res.json();
-    showToast(`AI 重评完成！(${data.model})`, 'success');
+    showToast('三模型仲裁重评完成！', 'success');
 
     // Reload submission data
     const subRes = await fetch(`${API}/api/submissions/${submissionId}`);
@@ -362,12 +411,55 @@ document.getElementById('btn-regrade').addEventListener('click', async () => {
     document.getElementById('nav-student').textContent =
       `${submission.student_name || '未知'} (${submission.student_id || '—'})`;
   } catch (err) {
-    showToast('AI 重评失败: ' + err.message, 'error');
+    showToast('三模型仲裁失败: ' + err.message, 'error');
     // Restore score panel
     renderScorePanel();
   } finally {
     btn.disabled = false;
-    btn.textContent = '🔄 AI 重评';
+    btn.textContent = '🧭 三模型仲裁重评';
+  }
+});
+
+document.getElementById('btn-replace-pdf').addEventListener('click', () => {
+  const label = submission?.student_name || submission?.student_id || '这份卷子';
+  if (!confirm(`替换 [${label}] 的 PDF？\n这会清空这份卷子的旧 AI/人工评分与聊天记录，状态回到“待处理”。`)) return;
+  document.getElementById('replace-pdf-file').click();
+});
+
+document.getElementById('replace-pdf-file').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  const formData = new FormData();
+  formData.append('pdf', file);
+  showToast('正在替换 PDF...', 'info');
+
+  try {
+    const res = await fetch(`${API}/api/submissions/${submissionId}/replace-pdf`, { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '替换失败');
+    showToast('PDF 已替换，旧评分已清空', 'success');
+    setTimeout(() => window.location.reload(), 400);
+  } catch (err) {
+    showToast('替换失败: ' + err.message, 'error');
+  } finally {
+    e.target.value = '';
+  }
+});
+
+document.getElementById('btn-delete-submission').addEventListener('click', async () => {
+  const label = submission?.student_name || submission?.student_id || '这份卷子';
+  if (!confirm(`确认删除 [${label}]？\n这会同时删除数据库记录、评分/聊天记录，以及 submissions 目录中的 PDF 文件。`)) return;
+
+  showToast('正在删除...', 'info');
+  try {
+    const res = await fetch(`${API}/api/submissions/${submissionId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '删除失败');
+    showToast('记录已删除', 'success');
+    setTimeout(() => { window.location.href = '/'; }, 400);
+  } catch (err) {
+    showToast('删除失败: ' + err.message, 'error');
   }
 });
 

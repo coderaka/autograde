@@ -194,7 +194,8 @@ function setupEventListeners() {
         }
         
         const data = await res.json();
-        document.getElementById('input-assignment-rubric').value = JSON.stringify(data.rubric, null, 2);
+        const generatedRubric = data.rubric || data;
+        document.getElementById('input-assignment-rubric').value = JSON.stringify(generatedRubric, null, 2);
         showToast('🎉 Rubric 评分标准生成成功！', 'success');
       } catch (err) {
         showToast('生成 Rubric 失败: ' + err.message, 'error');
@@ -541,7 +542,10 @@ function renderTable() {
   empty.style.display = 'none';
 
   tbody.innerHTML = sorted.map((sub, i) => {
-    const aiScore = sub.ai_grade_json ? JSON.parse(sub.ai_grade_json).total_score : '—';
+    let aiGrade = null;
+    try { aiGrade = sub.ai_grade_json ? JSON.parse(sub.ai_grade_json) : null; } catch { aiGrade = null; }
+    const aiScore = aiGrade ? aiGrade.total_score : '—';
+    const panelMark = aiGrade?.grading_panel ? '<div style="font-size:0.68rem;color:var(--text-muted);margin-top:2px;">仲裁</div>' : '';
     const finalScore = sub.total_score ?? '—';
     const statusLabel = {
       pending: '待处理', grading: '批改中', ai_graded: 'AI 已评',
@@ -558,15 +562,17 @@ function renderTable() {
       <td class="mono" id="sid-${sub.id}">${studentIdDisplay}</td>
       <td id="sname-${sub.id}">${sub.student_name || '—'}</td>
       <td><span class="badge badge-${sub.status}">${statusLabel}</span></td>
-      <td class="mono">${aiScore}</td>
+      <td class="mono">${aiScore}${panelMark}</td>
       <td class="mono" style="font-weight:600">${finalScore}</td>
       <td>${sub.graded_by || ''}</td>
       <td>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="btn btn-sm" style="opacity:0.6" onclick="editIdentity(${sub.id},'${(sub.student_id||'').replace(/'/g,"\\'")}','${(sub.student_name||'').replace(/'/g,"\\'")}')">✏️</button>
+          <button class="btn btn-sm btn-secondary" onclick="replaceSubmissionPdf(${sub.id})" title="替换 PDF，并清空这份卷子的旧评分">📄 替换</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteSubmissionRecord(${sub.id})" title="删除记录和 PDF 文件">🗑️ 删除</button>
           ${sub.status === 'pending' || sub.status === 'error'
-            ? `<button class="btn btn-sm btn-primary" onclick="aiGrade(${sub.id}, this)">🤖 AI 批改</button>`
-            : `<button class="btn btn-sm btn-secondary" onclick="aiGrade(${sub.id}, this)">🔄 重评</button>`}
+            ? `<button class="btn btn-sm btn-primary" onclick="aiGrade(${sub.id}, this)">🧭 仲裁批改</button>`
+            : `<button class="btn btn-sm btn-secondary" onclick="aiGrade(${sub.id}, this)">🧭 重新仲裁</button>`}
           ${sub.status !== 'pending'
             ? `<a href="/grade/${sub.id}" class="btn btn-sm btn-secondary">📝 查看</a>`
             : ''}
@@ -620,18 +626,18 @@ async function batchGrade() {
     return;
   }
 
-  if (!confirm(`确认开始批量 AI 批改 ${pending.length} 份卷子？`)) return;
+  if (!confirm(`确认开始批量三模型仲裁批改 ${pending.length} 份卷子？`)) return;
 
   document.getElementById('btn-batch-grade').disabled = true;
-  showToast(`正在批改 ${pending.length} 份卷子，请勿关闭页面...`, 'info');
+  showToast(`正在三模型仲裁批改 ${pending.length} 份卷子，请勿关闭页面...`, 'info');
 
   try {
-    await fetch(`${API}/api/submissions/batch-grade`, {
+    await fetch(`${API}/api/submissions/batch-panel-grade`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assignment: activeAssignment }),
     });
-    showToast('批量批改已启动，自动刷新中...', 'success');
+    showToast('批量三模型仲裁已启动，自动刷新中...', 'success');
     // Poll for updates
     const interval = setInterval(async () => {
       await loadData();
@@ -639,20 +645,65 @@ async function batchGrade() {
       if (!stillGrading) {
         clearInterval(interval);
         document.getElementById('btn-batch-grade').disabled = false;
-        showToast('批量批改完成！', 'success');
+        showToast('批量三模型仲裁完成！', 'success');
       }
     }, 5000);
   } catch (err) {
-    showToast('批量批改失败: ' + err.message, 'error');
+    showToast('批量仲裁失败: ' + err.message, 'error');
     document.getElementById('btn-batch-grade').disabled = false;
   }
 }
+
+window.replaceSubmissionPdf = function(id) {
+  const sub = allSubmissions.find(s => s.id === id);
+  const label = sub?.student_name || sub?.student_id || sub?.pdf_path || '这份卷子';
+  if (!confirm(`替换 [${label}] 的 PDF？\n这会清空这份卷子的旧 AI/人工评分与聊天记录，状态回到“待处理”。`)) return;
+
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.pdf,application/pdf';
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('pdf', file);
+
+    showToast('正在替换 PDF...', 'info');
+    try {
+      const res = await fetch(`${API}/api/submissions/${id}/replace-pdf`, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '替换失败');
+      showToast('PDF 已替换，旧评分已清空', 'success');
+      loadData();
+    } catch (err) {
+      showToast('替换失败: ' + err.message, 'error');
+    }
+  };
+  input.click();
+};
+
+window.deleteSubmissionRecord = async function(id) {
+  const sub = allSubmissions.find(s => s.id === id);
+  const label = sub?.student_name || sub?.student_id || sub?.pdf_path || '这份卷子';
+  if (!confirm(`确认删除 [${label}]？\n这会同时删除数据库记录、评分/聊天记录，以及 submissions 目录中的 PDF 文件。`)) return;
+
+  showToast('正在删除...', 'info');
+  try {
+    const res = await fetch(`${API}/api/submissions/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '删除失败');
+    showToast('记录已删除', 'success');
+    loadData();
+  } catch (err) {
+    showToast('删除失败: ' + err.message, 'error');
+  }
+};
 
 window.aiGrade = async function(id, btn) {
   const sub = allSubmissions.find(s => s.id === id);
   if (sub && sub.status !== 'pending' && sub.status !== 'error') {
     const label = sub.student_name || sub.student_id || '未命名学生';
-    if (!confirm(`确认要重新批改 [${label}] 的整份卷子吗？\n警告：这将会覆盖当前已有的评分和修改理由！`)) {
+    if (!confirm(`确认要用三模型仲裁流程重新批改 [${label}] 吗？\nGemini 3.5 Flash 与 AGY Gemini 3.1 Pro High 会并行初评，随后 Codex GPT-5.5 xhigh 仲裁；这会覆盖当前已有评分。`)) {
       return;
     }
   }
@@ -661,21 +712,21 @@ window.aiGrade = async function(id, btn) {
   if (btn) {
     btn.disabled = true;
     originalHtml = btn.innerHTML;
-    btn.innerHTML = `<span class="spinner-sm" style="margin-right:4px; vertical-align:middle;"></span>⏳ 批改中...`;
+    btn.innerHTML = `<span class="spinner-sm" style="margin-right:4px; vertical-align:middle;"></span>⏳ 仲裁中...`;
   }
 
-  showToast('正在 AI 批改...', 'info');
+  showToast('正在三模型仲裁批改...', 'info');
   try {
-    const res = await fetch(`${API}/api/submissions/${id}/ai-grade`, { method: 'POST' });
+    const res = await fetch(`${API}/api/submissions/${id}/panel-grade`, { method: 'POST' });
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.error);
     }
     const data = await res.json();
-    showToast(`AI 批改完成！(${data.model})`, 'success');
+    showToast('三模型仲裁完成！', 'success');
     loadData();
   } catch (err) {
-    showToast('AI 批改失败: ' + err.message, 'error');
+    showToast('三模型仲裁失败: ' + err.message, 'error');
     if (btn) {
       btn.disabled = false;
       btn.innerHTML = originalHtml;
@@ -742,6 +793,11 @@ function setupSSE() {
   es.onerror = () => {};
 }
 
+function formatEventScore(event) {
+  const maxScore = event.max_score || 100;
+  return `${event.score}/${maxScore}`;
+}
+
 function handleGradingEvent(event) {
   switch (event.type) {
     case 'batch_start':
@@ -757,12 +813,16 @@ function handleGradingEvent(event) {
       break;
 
     case 'grading_done':
-      addLogEntry('done', `${event.progress ? `[${event.progress}] ` : ''}✅ ${event.label} — ${event.score}/120`, event.time);
+      addLogEntry('done', `${event.progress ? `[${event.progress}] ` : ''}✅ ${event.label} — ${formatEventScore(event)}`, event.time);
       if (!event.progress) {
         isGrading = false;
         updateLogHeader(false);
       }
       if (!isReplayingHistory) loadData();
+      break;
+
+    case 'panel_stage':
+      addLogEntry('start', (event.progress ? '[' + event.progress + '] ' : '') + '🧭 ' + event.label + ' — ' + (event.message || event.phase), event.time);
       break;
 
     case 'grading_error':
